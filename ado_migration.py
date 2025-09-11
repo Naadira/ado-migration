@@ -10,6 +10,7 @@ import requests
 from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from requests.auth import HTTPBasicAuth
 from bs4 import BeautifulSoup
+from bs4 import NavigableString
 from typing import Dict, List, Tuple, Set
 
 load_dotenv()
@@ -462,170 +463,359 @@ def jira_add_comment(issue_key: str, text: str):
     if r.status_code not in (200, 201):
         log(f"   ⚠️ Add comment failed: {r.status_code} {r.text}")
 
+
+# Regex to detect bare URLs
+URL_PATTERN = re.compile(r'(https?://\S+)')
+
+def convert_text_with_links(text: str):
+    """
+    Split plain text into ADF parts.
+    Turns bare URLs into clickable Jira ADF links.
+    """
+    parts = []
+    last_idx = 0
+    for match in URL_PATTERN.finditer(text):
+        url = match.group(1)
+        start, end = match.span()
+
+        # text before the URL
+        if start > last_idx:
+            parts.append({"type": "text", "text": text[last_idx:start]})
+
+        # the URL itself as a link
+        parts.append({
+            "type": "text",
+            "text": url,
+            "marks": [{"type": "link", "attrs": {"href": url}}]
+        })
+
+        last_idx = end
+
+    # any remaining text after the last URL
+    if last_idx < len(text):
+        parts.append({"type": "text", "text": text[last_idx:]})
+
+    return parts
+
+
+# def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
+#     """
+#     Convert ADO description HTML -> Jira ADF (supports text, links, images).
+#     Inline images are downloaded, uploaded to Jira, and embedded into description
+#     using mediaId when available. If mediaId missing, falls back to a link paragraph.
+#     """
+#     if not raw_html:
+#         return {"type": "doc", "version": 1, "content": []}
+
+#     soup = BeautifulSoup(raw_html, "html.parser")
+#     adf_content = []
+#     seen_links: set[str] = set()   # ✅ Track seen links
+
+#     # Use find_all on common block-level/nested tags (p, div, br, a, img)
+#     # We'll handle text in div/p and single-line breaks.
+#     # Normalize: replace <br> with newline so get_text handles it.
+#     for br in soup.find_all("br"):
+#         br.replace_with("\n")
+
+#     # Process block-level elements in document order
+#     for element in soup.find_all(["div", "p", "a", "img"], recursive=False ):
+#         print(f"\n👉 Processing element: <{element.name}> {str(element)[:80]}...")
+
+#         # If it's a div or p, it may contain nested a/img; handle its children
+#         if element.name in ("div", "p"):
+#             # If element contains images or links, iterate children to preserve order
+#             has_child_images = element.find("img")
+#             if has_child_images:
+#                 for child in element.children:
+#                     if getattr(child, "name", None) == "img":
+#                         src = child.get("src")
+#                         print(f"  🖼 Found child <img> src={src}")
+#                         if src and ATTACH_URL_SUBSTR in src:
+#                             filename = parse_qs(urlparse(src).query or "").get("fileName", ["embedded.png"])[0]
+#                             local_file = download_images_to_ado_attachments(src)
+#                             if not local_file:
+#                                 continue
+#                             upload = jira_upload_attachment(issue_key, local_file)
+#                             # log("Upload Data from the des attachment : ", upload," Asdfg")
+#                             if not upload:
+#                                 continue
+#                             # prefer mediaId for embedding
+#                             if upload.get("id"):
+#                                 adf_content.append(
+#                                 {
+#                                     "type": "mediaSingle",
+#                                     "content": [
+#                                         {
+#                                         "type": "media",
+#                                         "attrs": {
+#                                             "type": "external",
+#                                             "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload.get("id")}",
+#                                             "width": 710,
+#                                             "height": 163
+#                                         }
+#                                         }
+#                                     ]
+#                                     }
+#                                 )
+#                             else:
+#                                 # fallback: insert clickable link to content
+#                                 adf_content.append({
+#                                     "type": "paragraph",
+#                                     "content": [{
+#                                         "type": "text",
+#                                         "text": upload.get("filename") or "Attachment",
+#                                         "marks": [{"type": "link", "attrs": {"href": upload.get("content")}}] if upload.get("content") else []
+#                                     }]
+#                                 })
+#                     elif getattr(child, "name", None) == "a":
+#     # skip here, will be handled in anchor section
+#                             continue
+#                     else:
+#                         text = getattr(child, "get_text", lambda strip=True: str(child))(strip=True)
+#                         if text:
+#                             print(f"  ✏️ Text inside <p/div>: {text}")
+#                             adf_content.append({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+#             else:
+#                 # No images inside — may contain plain text or links
+#                 if element.find("a"):
+#                     block_content = []
+#                     for child in element.children:
+#                         if getattr(child, "name", None) == "a":
+#                             href = child.get("href", "").strip()
+#                             label = child.get_text(strip=True) or href
+#                             if href:
+#                                 block_content.append({
+#                                     "type": "text",
+#                                     "text": label,
+#                                     "marks": [{"type": "link", "attrs": {"href": href}}]
+#                                 })
+#                         elif isinstance(child, NavigableString) and child.strip():
+#                              block_content.extend(convert_text_with_links(str(child).strip()))
+#                     if block_content:
+#                         adf_content.append({
+#                             "type": "paragraph",
+#                             "content": block_content
+#                         })
+#                 else:
+#                     # ✅ Only plain text (no links)
+#                     text = element.get_text("\n", strip=True).strip()
+#                     if text:
+#                         print(f"  ✏️ Plain text block: {text}")
+#                         adf_content.append({
+#                             "type": "paragraph",
+#                             "content": convert_text_with_links(text)
+#                         })
+
+#         elif element.name == "a":
+#             href = element.get("href", "").strip()
+#             label = element.get_text(strip=True) or href
+#             if href:   # ✅ avoid duplicates
+#                 # seen_links.add(href)
+#                 adf_content.append({
+#                     "type": "paragraph",
+#                     "content": [
+#                         {
+#                             "type": "text",
+#                             "text": label,
+#                             "marks": [{"type": "link", "attrs": {"href": href}}]
+#                         }
+#                     ]
+#                 })
+
+#         elif element.name == "img":
+#             src = element.get("src")
+#             upload = {}
+#             if src and ATTACH_URL_SUBSTR in src:
+#                 filename = parse_qs(urlparse(src).query or "").get("fileName", ["embedded.png"])[0]
+
+#                 local_file = download_images_to_ado_attachments(src)
+#                 if not local_file:
+#                     continue
+
+#                 upload = jira_upload_attachment(issue_key, local_file)
+#                 if not upload or not upload.get("id"):
+#                     continue
+
+#                 # ✅ Only embed the media, no extra text
+#                 adf_content.append(
+#                     {
+#                     "type": "mediaSingle",
+#                     "content": [
+#                         {
+#                         "type": "media",
+#                         "attrs": {
+#                             "type": "external",
+#                             "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload.get("id")}",
+#                             "width": 710,
+#                             "height": 163
+#                         }
+#                         }
+#                     ]
+#                     }
+#                 )
+
+#             else:
+#                 # fallback to clickable link to attachment
+#                 adf_content.append({
+#                     "type": "paragraph",
+#                     "content": [{
+#                         "type": "text",
+#                         "text": upload.get("filename") or "Attachment",
+#                         "marks": [{"type": "link", "attrs": {"href": upload.get("content")}}] if upload.get("content") else []
+#                     }]
+#                 })
+
+#     # If nothing was extracted, as safe fallback put plain text of raw_html
+#     if not adf_content:
+#         fallback_text = re.sub(r"<[^>]+>", " ", raw_html)
+#         fallback_text = html.unescape(fallback_text).strip()
+#         if fallback_text:
+#             adf_content = [{"type": "paragraph", "content": convert_text_with_links(fallback_text)}]
+
+#     # ✅ Debug print final ADF before returning
+#     import json
+#     print("\n📄 Final ADF Description:")
+#     print(json.dumps({"type": "doc", "version": 1, "content": adf_content}, indent=2))
+
+
+#     return {"type": "doc", "version": 1, "content": adf_content}
+
 def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
     """
     Convert ADO description HTML -> Jira ADF (supports text, links, images).
-    Inline images are downloaded, uploaded to Jira, and embedded into description
-    using mediaId when available. If mediaId missing, falls back to a link paragraph.
+    Preserves document order: text/link parts remain inline, images become mediaSingle blocks in place.
     """
     if not raw_html:
         return {"type": "doc", "version": 1, "content": []}
 
     soup = BeautifulSoup(raw_html, "html.parser")
-    adf_content = []
-    seen_links: set[str] = set()   # ✅ Track seen links
 
-    # Use find_all on common block-level/nested tags (p, div, br, a, img)
-    # We'll handle text in div/p and single-line breaks.
-    # Normalize: replace <br> with newline so get_text handles it.
+    # normalize <br> into newline characters
     for br in soup.find_all("br"):
         br.replace_with("\n")
 
-    # Process block-level elements in document order
-    for element in soup.find_all(["div", "p", "a", "img"]):
-        print(f"\n👉 Processing element: <{element.name}> {str(element)[:80]}...")
+    adf_content = []
+    seen_links: set[str] = set()
+    block_tags = {"p", "div", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"}
 
-        # If it's a div or p, it may contain nested a/img; handle its children
-        if element.name in ("div", "p"):
-            # If element contains images or links, iterate children to preserve order
-            has_child_images = element.find("img")
-            if has_child_images:
-                for child in element.children:
-                    if getattr(child, "name", None) == "img":
-                        src = child.get("src")
-                        print(f"  🖼 Found child <img> src={src}")
-                        if src and ATTACH_URL_SUBSTR in src:
-                            filename = parse_qs(urlparse(src).query or "").get("fileName", ["embedded.png"])[0]
-                            local_file = download_images_to_ado_attachments(src)
-                            if not local_file:
-                                continue
-                            upload = jira_upload_attachment(issue_key, local_file)
-                            if not upload:
-                                continue
-                            # prefer mediaId for embedding
-                            if upload.get("id"):
-                                adf_content.append(
-                                {
-                                    "type": "mediaSingle",
-                                    "content": [
-                                        {
-                                        "type": "media",
-                                        "attrs": {
-                                            "type": "external",
-                                            "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload.get("id")}",
-                                            "width": 710,
-                                            "height": 163
-                                        }
-                                        }
-                                    ]
-                                    }
-                                )
-                            else:
-                                # fallback: insert clickable link to content
-                                adf_content.append({
-                                    "type": "paragraph",
-                                    "content": [{
-                                        "type": "text",
-                                        "text": upload.get("filename") or "Attachment",
-                                        "marks": [{"type": "link", "attrs": {"href": upload.get("content")}}] if upload.get("content") else []
-                                    }]
-                                })
-                    elif getattr(child, "name", None) == "a":
-    # skip here, will be handled in anchor section
-                            continue
-                    else:
-                        text = getattr(child, "get_text", lambda strip=True: str(child))(strip=True)
-                        if text:
-                            print(f"  ✏️ Text inside <p/div>: {text}")
-                            adf_content.append({"type": "paragraph", "content": [{"type": "text", "text": text}]})
-            else:
-                # No images inside — convert the block text
-                text = element.get_text("\n", strip=True).strip()
-                if text:
-                    # If the block contains links, convert them to marks by processing anchors
-                    # Simple approach: if anchors exist, create a paragraph per anchor/text piece.
-                    if element.find("a"):
-                        for part in element.find_all(["a"]):
-                            href = part.get("href", "").strip()
-                            label = part.get_text(strip=True) or href
-                            if href and href not in seen_links:   # ✅ prevent duplicates
-                                seen_links.add(href)
-                                print(f"  🔗 New link from <p/div>: {href}")
-                                adf_content.append({
-                                    "type": "paragraph",
-                                    "content": [{
-                                        "type": "text",
-                                        "text": label,
-                                        "marks": [{"type": "link", "attrs": {"href": href}}]
-                                    }]
-                                })
-                            else:
-                                print(f"  ⚠️ Skipped duplicate link in <p/div>: {href}")
-                    else:
-                        print(f"  ✏️ Plain text block: {text}")
-                        adf_content.append({"type": "paragraph", "content": [{"type": "text", "text": text}]})
+    def flush_paragraph(inline_nodes):
+        """Push inline_nodes into adf_content as a paragraph and clear them."""
+        if inline_nodes:
+            adf_content.append({"type": "paragraph", "content": inline_nodes.copy()})
+            inline_nodes.clear()
 
-        elif element.name == "a":
-            href = element.get("href", "").strip()
-            label = element.get_text(strip=True) or href
-            if href and href not in seen_links:   # ✅ avoid duplicates
-                seen_links.add(href)
-                adf_content.append({
-                    "type": "paragraph",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": label,
-                            "marks": [{"type": "link", "attrs": {"href": href}}]
-                        }
-                    ]
-                })
+    def make_text_node(text: str) -> dict:
+        return {"type": "text", "text": text}
 
-        elif element.name == "img":
-            src = element.get("src")
-            if src and ATTACH_URL_SUBSTR in src:
-                filename = parse_qs(urlparse(src).query or "").get("fileName", ["embedded.png"])[0]
+    def make_link_node(text: str, href: str) -> dict:
+        return {"type": "text", "text": text, "marks": [{"type": "link", "attrs": {"href": href}}]}
 
-                local_file = download_images_to_ado_attachments(src)
-                if not local_file:
-                    continue
-
-                upload = jira_upload_attachment(issue_key, local_file)
-                if not upload or not upload.get("mediaId"):
-                    continue
-
-                # ✅ Only embed the media, no extra text
+    def handle_image_tag(img_tag):
+        """Download/upload image and insert mediaSingle (preferred) or fallback link."""
+        src = img_tag.get("src") or ""
+        if src and ATTACH_URL_SUBSTR in src:
+            local_file = download_images_to_ado_attachments(src)
+            if not local_file:
+                return
+            upload = jira_upload_attachment(issue_key, local_file)
+            if upload and upload.get("id"):
                 adf_content.append({
                     "type": "mediaSingle",
-                    "content": [
-                        {
-                            "type": "media",
-                            "attrs": {
-                                "type": "file",
-                                "id": upload["mediaId"],
-                                "collection": "jira-attachments"
-                            }
+                    "content": [{
+                        "type": "media",
+                        "attrs": {
+                            "type": "external",
+                            "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload['id']}",
+                            "width": 710,
+                            "height": 163
                         }
-                    ]
+                    }]
                 })
-
-            else:
-                # fallback to clickable link to attachment
+            elif upload and upload.get("content"):
                 adf_content.append({
                     "type": "paragraph",
                     "content": [{
                         "type": "text",
                         "text": upload.get("filename") or "Attachment",
-                        "marks": [{"type": "link", "attrs": {"href": upload.get("content")}}] if upload.get("content") else []
+                        "marks": [{"type": "link", "attrs": {"href": upload["content"]}}]
                     }]
                 })
+        elif src:
+            # non-ADO image: fallback to link
+            adf_content.append({
+                "type": "paragraph",
+                "content": [{
+                    "type": "text",
+                    "text": src,
+                    "marks": [{"type": "link", "attrs": {"href": src}}]
+                }]
+            })
 
-    # If nothing was extracted, as safe fallback put plain text of raw_html
+    def process_nodes(nodes, inline_acc):
+        """Process nodes sequentially, preserving order."""
+        from bs4 import NavigableString, Tag
+
+        for node in nodes:
+            if isinstance(node, NavigableString):
+                text = str(node).replace("\r", "").replace("\n", " ").strip()
+                if text:
+                    inline_acc.append(make_text_node(text))
+                continue
+
+            if not isinstance(node, Tag):
+                continue
+
+            name = node.name.lower()
+
+            if name == "br":
+                inline_acc.append(make_text_node("\n"))
+                continue
+
+            if name == "img":
+                if inline_acc:
+                    flush_paragraph(inline_acc)
+                handle_image_tag(node)
+                continue
+
+            if name == "a":
+                href = (node.get("href") or "").strip()
+                label = node.get_text(strip=True) or href
+                if href:
+                    if href in seen_links:
+                        # duplicate link → keep label as plain text
+                        inline_acc.append(make_text_node(label))
+                    else:
+                        seen_links.add(href)
+                        inline_acc.append(make_link_node(label, href))
+                else:
+                    inline_acc.append(make_text_node(label))
+                continue
+
+            if name in block_tags:
+                if inline_acc:
+                    flush_paragraph(inline_acc)
+                local_inline = []
+                process_nodes(node.children, local_inline)
+                if local_inline:
+                    flush_paragraph(local_inline)
+                continue
+
+            # inline container (span, strong, em, etc.)
+            process_nodes(node.children, inline_acc)
+
+    # parse top-level nodes
+    inline_nodes = []
+    process_nodes(soup.contents, inline_nodes)
+    if inline_nodes:
+        flush_paragraph(inline_nodes)
+
+    # fallback: plain text of raw_html if nothing extracted
     if not adf_content:
+        import re, html as html_lib
         fallback_text = re.sub(r"<[^>]+>", " ", raw_html)
-        fallback_text = html.unescape(fallback_text).strip()
+        fallback_text = html_lib.unescape(fallback_text).strip()
         if fallback_text:
-            adf_content = [{"type": "paragraph", "content": [{"type": "text", "text": fallback_text}]}]
+            adf_content = [{"type": "paragraph", "content": [make_text_node(fallback_text)]}]
 
     return {"type": "doc", "version": 1, "content": adf_content}
 
@@ -782,7 +972,7 @@ def download_images_to_ado_attachments(url):
         print(f"❌ Failed: {response.status_code} - {response.text}")
 
 def jira_add_comment_for_link(issue_key: str, body: str):
-    url = f"https://one-atlas-mzvp.atlassian.net/rest/api/2/issue/{issue_key}/comment"
+    url = f"{JIRA_URL}/rest/api/2/issue/{issue_key}/comment"
     headers = {
         "Accept": "application/json",
         "Content-Type": "application/json"
@@ -976,5 +1166,4 @@ def migrate_all():
 
 if __name__ == "__main__":
     migrate_all()
-
 
