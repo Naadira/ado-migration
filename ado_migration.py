@@ -31,6 +31,10 @@ JIRA_EMAIL = os.getenv("JIRA_EMAIL")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
 
+#User-Credentials
+Email=os.getenv("EMAIL")
+JIRA_ACCOUNT_ID=os.getenv("JIRA_ACCOUNT_ID")
+# print("iop",JIRA_ACCOUNT_ID,Email)
 # Work item type mapping (ADO -> Jira)
 WORKITEM_TYPE_MAP = {
     "Epic": "Epic",
@@ -55,7 +59,7 @@ STATE_MAP = {
 
 # Optional (Not Configured yet): ADO email -> Jira accountId map
 USER_MAP: Dict[str, str] = {
-        "naadirasahar.n@cprime.com": "712020:d1b1f0d1-8e61-40a0-94f3-79e4c076f878",
+        Email:JIRA_ACCOUNT_ID,
 
 }
 
