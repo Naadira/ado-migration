@@ -31,10 +31,13 @@ JIRA_EMAIL = os.getenv("JIRA_EMAIL")
 JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
 
+<<<<<<< HEAD
 #User-Credentials
 Email=os.getenv("EMAIL")
 JIRA_ACCOUNT_ID=os.getenv("JIRA_ACCOUNT_ID")
 # print("iop",JIRA_ACCOUNT_ID,Email)
+=======
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
 # Work item type mapping (ADO -> Jira)
 WORKITEM_TYPE_MAP = {
     "Epic": "Epic",
@@ -59,7 +62,11 @@ STATE_MAP = {
 
 # Optional (Not Configured yet): ADO email -> Jira accountId map
 USER_MAP: Dict[str, str] = {
+<<<<<<< HEAD
         Email:JIRA_ACCOUNT_ID,
+=======
+        "naadirasahar.n@cprime.com": "712020:d1b1f0d1-8e61-40a0-94f3-79e4c076f878",
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
 
 }
 
@@ -208,8 +215,12 @@ def convert_ado_datetime(ado_datetime_str):
 
 # ---------- ADO fetch ----------
 def ado_wiql_all_ids(query: str) -> List[int]:
+<<<<<<< HEAD
     print(query,"7890")
     url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/wiql?api-version=7.1-preview.2"
+=======
+    url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/wiql?api-version=7.0"
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
     r = requests.post(url, json={"query": query}, auth=ado_auth())
 
     # 🔽 ADD THIS
@@ -447,7 +458,10 @@ def jira_create_issue(fields: Dict) -> str:
     base = clean_base(JIRA_URL)
     url = f"{base}/rest/api/3/issue"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
+<<<<<<< HEAD
     print(fields,"lop")
+=======
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
     r = requests.post(url, auth=jira_auth(), headers=headers, json={"fields": fields})
     if r.status_code == 201:
         key = r.json().get("key")
@@ -857,7 +871,10 @@ def process_description_with_attachments(issue_key: str, raw_html: str) -> Dict:
   
 def build_jira_fields_from_ado(wi: Dict) -> Dict:
     f = wi.get("fields", {})
+<<<<<<< HEAD
     # print(f,"testfield123")
+=======
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
     desc_text = clean_html_to_text(raw_desc)
@@ -866,7 +883,10 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
 
     tags = f.get("System.Tags", "")
+<<<<<<< HEAD
 
+=======
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
     labels: List[str] = []
     if tags:
         parts = re.split(r"[;,]", tags)
@@ -888,11 +908,15 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     ado_state = f.get("System.State", "New")
     print(f.get("Microsoft.VSTS.Scheduling.StartDate"))
     print(f.get("Microsoft.VSTS.Scheduling.TargetDate"))
+<<<<<<< HEAD
     print(f,"test")
+=======
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
     fields: Dict = {
         "project": {"key": JIRA_PROJECT_KEY},
         "summary": summary,
         "issuetype": {"name": jira_issuetype},
+<<<<<<< HEAD
         "description" : to_adf_doc(" "), # set placeholder first
 
         "labels": labels,
@@ -902,6 +926,17 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         ),
 
         "duedate": convert_ado_datetime(
+=======
+        "description" : to_adf_doc("Temp placeholder"), # set placeholder first
+
+        "labels": labels,
+        
+       "customfield_10443": convert_ado_datetime(
+        f.get("Microsoft.VSTS.Scheduling.StartDate", "")
+        ),
+
+        "customfield_10585": convert_ado_datetime(
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
         f.get("Microsoft.VSTS.Scheduling.TargetDate", "")
         ),
         }
@@ -909,7 +944,10 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if jira_priority_name:
         fields["priority"] = {"name": jira_priority_name}
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
     account_id = get_jira_account_id_for_email(assignee_email)
     print(f"🔎 ADO assignee email: {assignee_email}")
     print(f"🔎 Jira accountId mapped: {account_id}")
@@ -920,6 +958,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     tshirt_size = f.get("Custom.TShirtsize")
     print(tshirt_size)
     if tshirt_size:
+<<<<<<< HEAD
         fields["customfield_10533"] = {"value": tshirt_size}
 
     wid = f.get("System.Id")
@@ -944,6 +983,9 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if reason:
         fields["customfield_10599"] = str(reason)
     
+=======
+        fields["customfield_10584"] = {"value": tshirt_size}
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
 
     return fields
 OUTPUT_DIR = "ado_attachments"
@@ -1077,7 +1119,14 @@ def migrate_all():
 
     # Ascending ID order
     wiql = (
+<<<<<<< HEAD
 "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2025-10-12' AND [System.CreatedDate] < '2025-10-18'"    )
+=======
+        "SELECT [System.Id] FROM WorkItems "
+        "WHERE [System.TeamProject] = @project "
+        "ORDER BY [System.Id] ASC"
+    )
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
     ids = ado_wiql_all_ids(wiql)
     if not ids:
         log("No work items found.")
@@ -1088,6 +1137,7 @@ def migrate_all():
     # -------------------------------
     # 🔹 ADD BATCH CONTROL HERE
     # -------------------------------
+<<<<<<< HEAD
     SPECIFIC_ID = None  # 👉 Set your Work Item ID here (e.g. 12345) or keep None for batch mode
 
     if SPECIFIC_ID:
@@ -1102,6 +1152,14 @@ def migrate_all():
         ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
         log(f"📌 Processing {len(ids)} work items (from index {START_INDEX}) in this run.")
         # -------------------------------
+=======
+    START_INDEX = 0       # change for next run (0, 10000, 20000…)
+    MAX_TO_PROCESS = 10 # how many to migrate this run
+
+    ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
+    log(f"📌 Processing {len(ids)} work items (from index {START_INDEX}) in this run.")
+    # -------------------------------
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
 
     for batch in chunked(ids, WIQL_PAGE_SIZE):
         time.sleep(SLEEP_BETWEEN_CALLS)
@@ -1121,19 +1179,28 @@ def migrate_all():
             # 1) Create Jira issue
             fields = build_jira_fields_from_ado(wi)
             issue_key = jira_create_issue(fields)
+<<<<<<< HEAD
             # issue_key='833030'
             print("one")
             raw_desc = wi.get("fields", {}).get("System.Description", "")
             print(raw_desc,"test")
             if raw_desc:
                 print("two")
+=======
+
+            raw_desc = wi.get("fields", {}).get("System.Description", "")
+            if raw_desc:
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
                 desc_adf = process_description_to_adf(issue_key, raw_desc)
                 base = clean_base(JIRA_URL)
                 url = f"{base}/rest/api/3/issue/{issue_key}"
                 payload = {"fields": {"description": desc_adf}}
                 headers = {"Content-Type": "application/json"}
                 r = requests.put(url, auth=jira_auth(), headers=headers, json=payload)
+<<<<<<< HEAD
                 print(r.status_code,"test123")
+=======
+>>>>>>> d11d85328eafe8a009bd830346e73252a897b7f7
                 if r.status_code in (200, 204):
                     log(f"✅ Updated description for {issue_key} with inline images")
                 else:
