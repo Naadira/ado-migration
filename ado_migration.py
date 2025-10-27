@@ -208,7 +208,8 @@ def convert_ado_datetime(ado_datetime_str):
 
 # ---------- ADO fetch ----------
 def ado_wiql_all_ids(query: str) -> List[int]:
-    url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/wiql?api-version=7.0"
+    print(query,"7890")
+    url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/wiql?api-version=7.1-preview.2"
     r = requests.post(url, json={"query": query}, auth=ado_auth())
 
     # 🔽 ADD THIS
@@ -446,6 +447,7 @@ def jira_create_issue(fields: Dict) -> str:
     base = clean_base(JIRA_URL)
     url = f"{base}/rest/api/3/issue"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    print(fields,"lop")
     r = requests.post(url, auth=jira_auth(), headers=headers, json={"fields": fields})
     if r.status_code == 201:
         key = r.json().get("key")
@@ -855,6 +857,7 @@ def process_description_with_attachments(issue_key: str, raw_html: str) -> Dict:
   
 def build_jira_fields_from_ado(wi: Dict) -> Dict:
     f = wi.get("fields", {})
+    # print(f,"testfield123")
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
     desc_text = clean_html_to_text(raw_desc)
@@ -863,6 +866,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
 
     tags = f.get("System.Tags", "")
+
     labels: List[str] = []
     if tags:
         parts = re.split(r"[;,]", tags)
@@ -884,25 +888,27 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     ado_state = f.get("System.State", "New")
     print(f.get("Microsoft.VSTS.Scheduling.StartDate"))
     print(f.get("Microsoft.VSTS.Scheduling.TargetDate"))
+    print(f,"test")
     fields: Dict = {
         "project": {"key": JIRA_PROJECT_KEY},
         "summary": summary,
         "issuetype": {"name": jira_issuetype},
-        "description" : to_adf_doc("Temp placeholder"), # set placeholder first
+        "description" : to_adf_doc(" "), # set placeholder first
 
         "labels": labels,
         
-       "customfield_10443": convert_ado_datetime(
+       "customfield_10015": convert_ado_datetime(
         f.get("Microsoft.VSTS.Scheduling.StartDate", "")
         ),
 
-        "customfield_10585": convert_ado_datetime(
+        "duedate": convert_ado_datetime(
         f.get("Microsoft.VSTS.Scheduling.TargetDate", "")
         ),
         }
     
     if jira_priority_name:
         fields["priority"] = {"name": jira_priority_name}
+
 
     account_id = get_jira_account_id_for_email(assignee_email)
     print(f"🔎 ADO assignee email: {assignee_email}")
@@ -914,7 +920,30 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     tshirt_size = f.get("Custom.TShirtsize")
     print(tshirt_size)
     if tshirt_size:
-        fields["customfield_10584"] = {"value": tshirt_size}
+        fields["customfield_10533"] = {"value": tshirt_size}
+
+    wid = f.get("System.Id")
+    print(wid)
+    if wid:
+        fields["customfield_10537"] = str(wid)
+
+
+    area = f.get("System.AreaPath")
+    print(area)
+    if area:
+        fields["customfield_10566"] = str(area)
+        # fields["customfield_10534"] = {"value": area}
+
+    iteration = f.get("System.IterationPath")
+    print(iteration)
+    if iteration:
+        fields["customfield_10567"] = str(iteration)
+
+    reason = f.get("System.Reason")
+    print(reason)
+    if reason:
+        fields["customfield_10599"] = str(reason)
+    
 
     return fields
 OUTPUT_DIR = "ado_attachments"
@@ -1048,10 +1077,7 @@ def migrate_all():
 
     # Ascending ID order
     wiql = (
-        "SELECT [System.Id] FROM WorkItems "
-        "WHERE [System.TeamProject] = @project "
-        "ORDER BY [System.Id] ASC"
-    )
+"SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2025-10-12' AND [System.CreatedDate] < '2025-10-18'"    )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
         log("No work items found.")
@@ -1062,12 +1088,20 @@ def migrate_all():
     # -------------------------------
     # 🔹 ADD BATCH CONTROL HERE
     # -------------------------------
-    START_INDEX = 0       # change for next run (0, 10000, 20000…)
-    MAX_TO_PROCESS = 10 # how many to migrate this run
+    SPECIFIC_ID = None  # 👉 Set your Work Item ID here (e.g. 12345) or keep None for batch mode
 
-    ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
-    log(f"📌 Processing {len(ids)} work items (from index {START_INDEX}) in this run.")
-    # -------------------------------
+    if SPECIFIC_ID:
+        # 🟢 Single work item mode
+        ids = [SPECIFIC_ID]
+        log(f"🎯 Running migration for a single work item: {SPECIFIC_ID}")
+    else:
+        # 🟡 Normal batch mode
+        START_INDEX = 21      # change for next run (0, 10000, 20000…)
+        MAX_TO_PROCESS = 30   # how many to migrate this run
+
+        ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
+        log(f"📌 Processing {len(ids)} work items (from index {START_INDEX}) in this run.")
+        # -------------------------------
 
     for batch in chunked(ids, WIQL_PAGE_SIZE):
         time.sleep(SLEEP_BETWEEN_CALLS)
@@ -1087,15 +1121,19 @@ def migrate_all():
             # 1) Create Jira issue
             fields = build_jira_fields_from_ado(wi)
             issue_key = jira_create_issue(fields)
-
+            # issue_key='833030'
+            print("one")
             raw_desc = wi.get("fields", {}).get("System.Description", "")
+            print(raw_desc,"test")
             if raw_desc:
+                print("two")
                 desc_adf = process_description_to_adf(issue_key, raw_desc)
                 base = clean_base(JIRA_URL)
                 url = f"{base}/rest/api/3/issue/{issue_key}"
                 payload = {"fields": {"description": desc_adf}}
                 headers = {"Content-Type": "application/json"}
                 r = requests.put(url, auth=jira_auth(), headers=headers, json=payload)
+                print(r.status_code,"test123")
                 if r.status_code in (200, 204):
                     log(f"✅ Updated description for {issue_key} with inline images")
                 else:
