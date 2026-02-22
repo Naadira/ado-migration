@@ -37,28 +37,12 @@ JIRA_API_TOKEN = os.getenv("JIRA_API_TOKEN")
 JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
 
 #User-Credentials
-Email=os.getenv("EMAIL")
-JIRA_ACCOUNT_ID=os.getenv("JIRA_ACCOUNT_ID")
-# print("iop",JIRA_ACCOUNT_ID,Email)
+Email = os.getenv("EMAIL")
+JIRA_ACCOUNT_ID = os.getenv("JIRA_ACCOUNT_ID")
+
 # Work item type mapping (ADO -> Jira)
 WORKITEM_TYPE_MAP = {
-    # "Bug": "Bug",
-    # "Defect": "Defect",
-    # "Epic": "Epic",
     "Feature": "Epic",
-    # "Hotfix": "Hotfix",
-    # "Issue": "Issue",
-    # "Joes Test": "Joes Test",
-    # "Portfolio Epic": "Portfolio Epic",
-    # "Post Lockdown": "Post Lockdown",
-    # "Request": "Request",
-    # "RIDA (disabled)": "RIDA (disabled)",
-    # "Risk (disabled)": "Risk (disabled)",
-    # "Task": "Task",
-    # "Test Case": "Epic",
-    # "Test Plan": "Test Plan",
-    # "Test Suite": "Test Suite",
-    # "User Story": "User Story"
 }
 
 # Priority mapping (ADO int -> Jira priority name)
@@ -69,74 +53,64 @@ PRIORITY_MAP = {
     4: "Trivial"
 }
 
-# BUG_PRIORITY_MAP = {
-#     "P1": "Blocker",
-#     "P2": "High",
-#     "P3": "Low",
-#     "P4": "Trivial",
-# }
-
-# RESOLUTION_MAP = {
-#     "As Designed": "Working As Expected",
-#     "Cannot Reproduce": "Cannot Reproduce",
-#     "Copied to Backlog": "Copied to Backlog",
-#     "Deferred": "Deferred",
-#     "Duplicate": "Duplicate",
-#     "Fixed": "Done",
-#     "Fixed and verified": "Done",
-#     "Obsolete": "Known Error",
-#     "Will not Fix": "Won't Do"
-# }
-
-
 # ADO State -> Jira Status mapping
 STATE_MAP = {
     "New": "New",
-    "Defined":"REFINEMENT",
+    "Defined": "REFINEMENT",
     "In Grooming": "REFINEMENT",
-    # "Under Investigation": "In Refinement",
     "Ready": "Ready",
     "Committed": "Ready",
-    # "In Development": "In Progress",
-    # "Development Complete": "Review",
-    # "In Test": "Testing",
-    # "Test Complete": "Ready to Release",
-    # "Resolved": "Resolved",
     "Closed": "Done",
     "Removed": "Cancelled",
-    # "Waiting for customer": "Waiting for customer"
     "In Progress": "In Progress",
     "On Hold": "Hold",
     "Delivered": "Done",
-    # "Active": "Active",
-    # "Cancelled": "Cancelled",
-    # "Submitted": "Submitted",
-    # "Accepted": "Accepted",
-    # "Denied": "Denied",
-    # "Completed": "Completed",
-    # "External Response Needed": "External Response Needed",
-    # "External Response Provided": "External Response Provided",
-    # "Cost Estimate Needed": "Cost Estimate Needed",
-    # "Cost Estimate Provided": "Cost Estimate Provided",
-    # "Internal Response Provided": "Internal Response Provided",
-    # "Approved": "Approved",
-    # "Ready for Scheduling": "Ready for Scheduling",
-    # "Implementing": "Implementing",
-    # "Design": "Design",
-    # "Blocked": "Blocked",
-    # "Inactive": "Inactive",
-    # "In Planning": "In Planning",
-    # "In Refinement": "In Refinement"
 }
 
+# ============================================================
+# CSV-BASED USER MAP LOADING
+# ============================================================
 
-# # Optional (Not Configured yet): ADO email -> Jira accountId map
-# USER_MAP: Dict[str, str] = {
-#         Email:JIRA_ACCOUNT_ID,
+USER_MAP_FILE = "ado_jira_user_map.csv"
 
-# }
 
-USER_MAP: Dict[str, str] = {
+def _load_user_map(filepath: str) -> Dict[str, str]:
+    """
+    Load ADO email -> Jira accountId mappings from a CSV/TSV file.
+    First column: ADO email, Second column: Jira accountId.
+    Falls back to the hardcoded USER_MAP_FALLBACK if file not found.
+    """
+    result: Dict[str, str] = {}
+    if not os.path.exists(filepath):
+        print(f"⚠️  User map file not found: {filepath}. Using hardcoded fallback map.")
+        return result
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as fh:
+            first_line = fh.readline()
+            delimiter = "\t" if "\t" in first_line else ","
+            fh.seek(0)
+            import csv
+            reader = csv.reader(fh, delimiter=delimiter)
+            for row_num, row in enumerate(reader, 1):
+                if not row or all(cell.strip() == "" for cell in row):
+                    continue
+                if len(row) < 2:
+                    continue
+                email = row[0].strip().lower()
+                account_id = row[1].strip()
+                # Skip header row (if first col doesn't look like an email)
+                if row_num == 1 and "@" not in email:
+                    continue
+                if email and account_id:
+                    result[email] = account_id
+        print(f"✅ Loaded {len(result)} user mappings from {filepath}")
+    except Exception as e:
+        print(f"❌ Failed to load user map from {filepath}: {e}")
+    return result
+
+
+# Hardcoded fallback (used only if CSV file is not present)
+USER_MAP_FALLBACK: Dict[str, str] = {
     "mike.gallo@burgessgroup.com": "712020:b318e45e-e536-4842-82b0-dca4fe8e7bc0",
     "bridget.smith@burgessgroup.com": "712020:c3197f80-91cc-4818-af43-f2e9d436ba10",
     "christine.carpino@burgessgroup.com": "712020:627088d6-f69f-4e54-bd79-fe5f2e608064",
@@ -168,12 +142,20 @@ USER_MAP: Dict[str, str] = {
     "nicholas.howe@burgessgroup.com": "712020:8a92a45e-2695-4983-86ff-e5dd0839b86d",
     "davis.perkins@burgessgroup.com": "6303e3358474ff0a80ac2690",
     "siddappa.mavinahundi@burgessgroup.com": "712020:1c815819-7cdc-4683-8e00-593175dfd722",
-    "shawn.kane@burgessgroup.com" : "712020:80d74fac-9ef0-477d-a90b-1b9b6eef412c" ,
+    "shawn.kane@burgessgroup.com": "712020:80d74fac-9ef0-477d-a90b-1b9b6eef412c",
 }
+
+# Load from CSV first; fall back to hardcoded map if file missing
+_csv_map = _load_user_map(USER_MAP_FILE)
+USER_MAP: Dict[str, str] = _csv_map if _csv_map else USER_MAP_FALLBACK
 
 # Paging and throttling
 WIQL_PAGE_SIZE = 200
 SLEEP_BETWEEN_CALLS = 0.2
+
+# Retry settings
+MAX_RETRIES = 5
+RETRY_BACKOFF = 2
 
 # Mapping persistence
 MAPPING_FILE = "ado_jira_mapping.json"
@@ -185,9 +167,46 @@ ATTACH_DIR = "ado_attachments"
 ATTACH_URL_SUBSTR = "/_apis/wit/attachments/"
 
 
+# ============================================================
+# RETRY-AWARE API WRAPPER
+# ============================================================
+
+def api_request(method: str, url: str, wi_id=None, issue_key=None, step="API Call", **kwargs) -> requests.Response:
+    """
+    Wraps requests.<method> with automatic retry on 429 (rate-limit) and 5xx errors.
+    """
+    func = getattr(requests, method.lower())
+    wait = RETRY_BACKOFF
+    for attempt in range(1, MAX_RETRIES + 2):
+        try:
+            r = func(url, **kwargs)
+            if r.status_code == 429:
+                retry_after = int(r.headers.get("Retry-After", wait))
+                log(f"   ⏳ Rate limited (429). Waiting {retry_after}s before retry {attempt}/{MAX_RETRIES}...")
+                if attempt > MAX_RETRIES:
+                    return r
+                time.sleep(retry_after)
+                wait = min(wait * 2, 60)
+                continue
+            elif r.status_code >= 500:
+                log(f"   ⚠️ Server error ({r.status_code}). Retry {attempt}/{MAX_RETRIES}...")
+                if attempt > MAX_RETRIES:
+                    return r
+                time.sleep(wait)
+                wait = min(wait * 2, 60)
+                continue
+            return r
+        except requests.exceptions.ConnectionError as e:
+            log(f"   ⚠️ Connection error on attempt {attempt}: {e}")
+            if attempt > MAX_RETRIES:
+                raise
+            time.sleep(wait)
+            wait = min(wait * 2, 60)
+    raise RuntimeError(f"api_request failed after {MAX_RETRIES} retries for {url}")
+
+
 # ---------- Utilities ----------
 def ado_auth():
-    # ADO basic auth: username can be empty; PAT as password
     return ("", ADO_PAT)
 
 def jira_auth():
@@ -208,21 +227,16 @@ def ensure_dir(path: str):
         os.makedirs(path, exist_ok=True)
 
 def sanitize_filename(name: str) -> str:
-    """Make a safe filename (Windows/macOS/Linux)."""
     if not name:
         return "attachment"
-    # strip directories
     name = os.path.basename(name)
-    # remove illegal/reserved characters
     name = re.sub(r'[\\/:*?"<>|]+', "_", name)
-    # trim whitespace and dots
     name = name.strip().strip(".")
     if not name:
         name = "attachment"
     return name
 
 def unique_path(root_dir: str, filename: str) -> str:
-    """Return a non-colliding path by adding (1), (2), ... suffix if needed."""
     filename = sanitize_filename(filename)
     base, ext = os.path.splitext(filename)
     candidate = os.path.join(root_dir, filename)
@@ -236,11 +250,11 @@ def clean_html_to_text(s: str) -> str:
     if not s:
         return ""
     s = html.unescape(s)
-    s = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", s)      # <br> -> newline
-    s = re.sub(r"(?i)</\s*p\s*>", "\n\n", s)         # </p> -> blank line
-    s = re.sub(r"(?i)<\s*p\s*>", "", s)              # <p> opening removed
-    s = re.sub(r"<[^>]+>", "", s)                    # strip remaining tags
-    s = re.sub(r"\n{3,}", "\n\n", s)                 # collapse 3+ LFs
+    s = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", s)
+    s = re.sub(r"(?i)</\s*p\s*>", "\n\n", s)
+    s = re.sub(r"(?i)<\s*p\s*>", "", s)
+    s = re.sub(r"<[^>]+>", "", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
     return s.strip()
 
 def to_adf_paragraph(text: str) -> Dict:
@@ -255,45 +269,13 @@ def to_adf_doc(text: str) -> Dict:
 def get_jira_account_id_for_email(email: str) -> str:
     if not email:
         return ""
-    # return USER_MAP.get(email, "")
     return USER_MAP.get(email.lower(), None)
-    print(f"🔎 ADO assignee email: {assignee_email}")
-    print(f"🔎 Jira accountId mapped: {account_id}")
 
-# def convert_ado_datetime(ado_datetime_str):
-#     if not ado_datetime_str:
-#         return None
-#     try:
-#         # Parse ISO 8601 with timezone awareness (e.g., 2025-09-24T10:00:00Z)
-#         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
-#         dt = dt.replace(tzinfo=timezone.utc)  # explicitly set UTC
-#         result=dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-#         print(result,"time")
-#         return result
-#     except ValueError:
-#         pass
-#     try:
-#         # Parse DD/MM/YYYY HH:MM
-#         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y %H:%M")
-#         result=dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-#         print("date_time")
-#         return result
-#     except ValueError:
-#         pass
-#     try:
-#         # Parse DD/MM/YYYY
-#         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y")
-#         formatted = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-#         print(formatted,"date_month_year")  # ✅ print actual value
-#         return formatted
-#     except ValueError:
-#         return None
 
 def convert_ado_datetime(ado_datetime_str):
     if not ado_datetime_str:
         return None
 
-    # SUPPORT for milliseconds: 2025-12-03T07:03:18.42Z
     try:
         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ")
         dt = dt.replace(tzinfo=timezone.utc)
@@ -303,7 +285,6 @@ def convert_ado_datetime(ado_datetime_str):
     except ValueError:
         pass
 
-    # ISO 8601 without milliseconds
     try:
         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
         dt = dt.replace(tzinfo=timezone.utc)
@@ -313,7 +294,6 @@ def convert_ado_datetime(ado_datetime_str):
     except ValueError:
         pass
 
-    # DD/MM/YYYY HH:MM
     try:
         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y %H:%M")
         result = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
@@ -322,7 +302,6 @@ def convert_ado_datetime(ado_datetime_str):
     except ValueError:
         pass
 
-    # DD/MM/YYYY
     try:
         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y")
         formatted = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
@@ -332,41 +311,12 @@ def convert_ado_datetime(ado_datetime_str):
         return None
 
 
-# def convert_ado_datetime(ado_datetime_str):
-#     if not ado_datetime_str:
-#         return None
-#     try:
-#         # Try ISO 8601 first (ADO default)
-#         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
-#         return dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-#     except ValueError:
-#         pass
-#     try:
-#         # Try DD/MM/YYYY HH:MM
-#         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y %H:%M")
-#         return dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-#     except ValueError:
-#         pass
-#     try:
-#         # Try DD/MM/YYYY
-#         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y")
-#         return dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-#     except ValueError:
-#         return None
-
-
-
 # ---------- ADO fetch ----------
 def ado_wiql_all_ids(query: str) -> List[int]:
-    print(query,"")
+    print(query, "")
     url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/wiql?api-version=7.1-preview.2"
-    r = requests.post(url, json={"query": query}, auth=ado_auth())
-
-    # 🔽 ADD THIS
+    r = api_request("post", url, step="WIQL Query", json={"query": query}, auth=ado_auth())
     print("Status:", r.status_code)
-    print("Response text:", r.text[:500])  # show first 500 chars only
-
-
     r.raise_for_status()
     items = r.json().get("workItems", [])
     return [wi["id"] for wi in items]
@@ -375,20 +325,14 @@ def ado_get_workitems_by_ids(ids: List[int]) -> List[Dict]:
     if not ids:
         return []
     url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/workitems?api-version=7.0&$expand=all&ids={','.join(map(str, ids))}"
-    r = requests.get(url, auth=ado_auth())
+    r = api_request("get", url, step="Fetch WorkItems", auth=ado_auth())
     r.raise_for_status()
-    print(r.json().get("value", []),"Issue Detail from AzureDevops")
+    print(r.json().get("value", []), "Issue Detail from AzureDevops")
     return r.json().get("value", [])
-
-    # 🔹 Debug print (only first 1–2 items to avoid spam)
-    for wi in data[:2]:
-        log(json.dumps(wi["fields"], indent=2))
-
-    return data
 
 def ado_get_comments(wi_id: int) -> List[Dict]:
     url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/workItems/{wi_id}/comments?api-version=7.0-preview.3"
-    r = requests.get(url, auth=ado_auth())
+    r = api_request("get", url, wi_id=wi_id, step="Fetch Comments", auth=ado_auth())
     if r.status_code == 200:
         return r.json().get("comments", [])
     else:
@@ -396,9 +340,6 @@ def ado_get_comments(wi_id: int) -> List[Dict]:
         return []
 
 def ado_get_attachments_from_relations(wi: Dict) -> List[Tuple[str, str]]:
-    """
-    Return list of (url, filename) for relations attachments.
-    """
     out: List[Tuple[str, str]] = []
     for rel in (wi.get("relations") or []):
         if rel.get("rel") == "AttachedFile":
@@ -408,7 +349,6 @@ def ado_get_attachments_from_relations(wi: Dict) -> List[Tuple[str, str]]:
     return out
 
 
-# --- Inline attachments parsing (description + comments) ---
 IMG_SRC_RE = re.compile(r'(?is)<img[^>]+src=["\']([^"\']+)["\']')
 HREF_RE    = re.compile(r'(?is)<a[^>]+href=["\']([^"\']+)["\']')
 
@@ -420,7 +360,6 @@ def extract_inline_ado_urls(html_str: str) -> List[str]:
     for u in HREF_RE.findall(html_str or ""):
         if ATTACH_URL_SUBSTR in u:
             urls.append(u)
-    # keep order but dedupe
     seen: Set[str] = set()
     uniq: List[str] = []
     for u in urls:
@@ -443,7 +382,6 @@ def ado_inline_attachments_from_comments(wi_id: int) -> List[Tuple[str, str]]:
     for c in ado_get_comments(wi_id):
         html_body = c.get("html") or c.get("renderedText") or ""
         if not html_body:
-            # sometimes only 'text' exists; skip as there are no inline images
             continue
         for u in extract_inline_ado_urls(html_body):
             name = parse_qs(urlparse(u).query or "").get("fileName", ["inline_attachment"])[0]
@@ -453,14 +391,9 @@ def ado_inline_attachments_from_comments(wi_id: int) -> List[Tuple[str, str]]:
 
 # ---------- Attachment download/upload ----------
 def _with_download_params(u: str, api_version: str = "7.0") -> str:
-    """
-    Normalize ADO attachment URLs:
-      - ensure api-version
-      - prefer download=true to force stream content
-    """
     p = urlparse(u)
     q = parse_qs(p.query)
-    q = {k: v for k, v in q.items()}  # copy
+    q = {k: v for k, v in q.items()}
     if "api-version" not in q:
         q["api-version"] = [api_version]
     if "download" not in q:
@@ -468,26 +401,20 @@ def _with_download_params(u: str, api_version: str = "7.0") -> str:
     new_q = urlencode({k: v[0] if isinstance(v, list) and len(v) == 1 else v for k, v in q.items()}, doseq=True)
     return urlunparse((p.scheme, p.netloc, p.path, p.params, new_q, p.fragment))
 
-def ado_download_attachment(att_url: str, desired_filename: str) -> str:
-    """
-    Try multiple ways to fetch the binary. Return local file path or "".
-    """
+def ado_download_attachment(att_url: str, desired_filename: str, wi_id=None, issue_key=None) -> str:
     ensure_dir(ATTACH_DIR)
-    # sanitize & pick a unique path
     local_path = unique_path(ATTACH_DIR, desired_filename)
-
-    # Try a couple of URL variants (7.0 then 6.0, with and without explicit download=true)
     candidates = [
         _with_download_params(att_url, "7.0"),
         _with_download_params(att_url, "6.0"),
-        # bare URL as last resort
         att_url
     ]
-
     headers = {"Accept": "application/octet-stream"}
     for idx, url_try in enumerate(candidates, 1):
         try:
-            r = requests.get(url_try, auth=ado_auth(), headers=headers, stream=True, allow_redirects=True)
+            r = api_request("get", url_try, wi_id=wi_id, issue_key=issue_key,
+                            step=f"Download Attachment ({desired_filename})",
+                            auth=ado_auth(), headers=headers, stream=True, allow_redirects=True)
             if r.status_code == 200:
                 with open(local_path, "wb") as f:
                     for chunk in r.iter_content(chunk_size=8192):
@@ -498,52 +425,20 @@ def ado_download_attachment(att_url: str, desired_filename: str) -> str:
                 log(f"   ⚠️ Download attempt {idx} failed ({r.status_code}) for: {url_try}")
         except Exception as e:
             log(f"   ⚠️ Download attempt {idx} error for: {url_try} -> {e}")
-
     return ""
 
-def jira_upload_attachment_as_comment(issue_key,url_content,data):
-    if (data==" "):
-        base = clean_base(JIRA_URL)
-        url=f"{base}/rest/api/2/issue/{issue_key}/comment"
-        data={
-    "body":f"!{url_content.get("content")}!"
-}
+def jira_upload_attachment_as_comment(issue_key, url_content, data, wi_id=None):
+    base = clean_base(JIRA_URL)
+    url = f"{base}/rest/api/2/issue/{issue_key}/comment"
+    body = f"!{url_content.get('content')}!" if data == " " else f"{data} !{url_content.get('content')}!"
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    r = api_request("post", url, wi_id=wi_id, issue_key=issue_key,
+                    step="Upload Attachment as Comment",
+                    auth=jira_auth(), headers=headers, json={"body": body})
+    if r.status_code not in (200, 201):
+        log(f"   ⚠️ Upload attachment as comment failed: {r.status_code}")
 
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        r = requests.post(url, auth=jira_auth(), headers=headers,json=data)
-        if r.status_code in (200, 201):
-            log(f"Uploaded attachment as comment")
-        else:
-            log(f"   ⚠️ Upload attachment failed")
-    else:
-        base = clean_base(JIRA_URL)
-        url=f"{base}/rest/api/2/issue/{issue_key}/comment"
-        data={
-    "body":f"{data} !{url_content.get("content")}!"
-    }
-
-        headers = {
-            "Accept": "application/json",
-            "Content-Type": "application/json"
-        }
-        r = requests.post(url, auth=jira_auth(), headers=headers,json=data)
-        if r.status_code in (200, 201):
-            log(f"Uploaded attachment as comment")
-        else:
-            log(f"   ⚠️ Upload attachment failed")
-
-def jira_upload_attachment(issue_key: str, file_path: str) -> dict:
-    """
-    Upload file to Jira and return a dict with keys:
-      - mediaId (preferred, uuid string) OR None
-      - id (numeric attachment id, as string) OR None
-      - filename
-      - content (direct content URL)
-      - raw (original JSON response for debugging)
-    """
+def jira_upload_attachment(issue_key: str, file_path: str, wi_id=None) -> dict:
     if not file_path or not os.path.exists(file_path):
         return None
 
@@ -552,21 +447,21 @@ def jira_upload_attachment(issue_key: str, file_path: str) -> dict:
     headers = {"X-Atlassian-Token": "no-check"}
     with open(file_path, "rb") as fh:
         files = {"file": (os.path.basename(file_path), fh, mimetypes.guess_type(file_path)[0] or "application/octet-stream")}
-        r = requests.post(url, headers=headers, auth=jira_auth(), files=files)
+        r = api_request("post", url, wi_id=wi_id, issue_key=issue_key,
+                        step=f"Upload Attachment ({os.path.basename(file_path)})",
+                        headers=headers, auth=jira_auth(), files=files)
 
     try:
         payload = r.json()
     except Exception:
         payload = None
 
-    # Log response for debugging — remove or reduce in production
     log(f"Upload response ({r.status_code}): {json.dumps(payload, indent=2) if payload else r.text[:500]}")
 
     if r.status_code not in (200, 201):
         log(f"⚠️ Failed to upload {file_path} to {issue_key}: {r.status_code} {r.text}")
         return None
 
-    # API returns an array of uploaded attachments; take first element
     if isinstance(payload, list) and len(payload) > 0:
         info = payload[0]
     elif isinstance(payload, dict):
@@ -577,286 +472,82 @@ def jira_upload_attachment(issue_key: str, file_path: str) -> dict:
     if not info:
         log("⚠️ Unexpected upload response format.")
         return None
-    log(f"The info attachement data {info}")
-    # Common fields returned: id (numeric), filename, content (url), thumbnail, maybe mediaId
-    media_id = info.get("mediaId") or info.get("mediaIdString")  # try common variants
+
+    log(f"The info attachment data {info}")
+    media_id = info.get("mediaId") or info.get("mediaIdString")
     numeric_id = str(info.get("id")) if info.get("id") is not None else None
     filename = info.get("filename") or os.path.basename(file_path)
     content_url = info.get("content") or info.get("url") or None
-    log(f"Meadia ID : {media_id} , id: {numeric_id} , filename :{filename} , Content : {content_url}, Raw : {info}")
+    log(f"Media ID : {media_id} , id: {numeric_id} , filename :{filename} , Content : {content_url}")
     return {
-        "mediaId": media_id,      # prefer this for embedding in ADF
-        "id": numeric_id,         # numeric id (fallback / for reference)
+        "mediaId": media_id,
+        "id": numeric_id,
         "filename": filename,
         "content": content_url,
         "raw": info
     }
 
+
 # ---------- Jira issue + comments ----------
-def jira_create_issue(fields: Dict) -> str:
+def jira_create_issue(fields: Dict, wi_id=None) -> str:
     base = clean_base(JIRA_URL)
     url = f"{base}/rest/api/3/issue"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    print(fields,"lop")
-    r = requests.post(url, auth=jira_auth(), headers=headers, json={"fields": fields})
+    print(fields, "lop")
+    r = api_request("post", url, wi_id=wi_id, step="Create Issue",
+                    auth=jira_auth(), headers=headers, json={"fields": fields})
     if r.status_code == 201:
         key = r.json().get("key")
         log(f"✅ Created {key}")
-        print(steps_payload,"iop")
         return key
     else:
         log(f"❌ Issue create failed: {r.status_code} {r.text}")
         return ""
 
-def jira_add_comment(issue_key: str, text: str):
+def jira_add_comment(issue_key: str, text: str, wi_id=None):
     if not text:
         return
     base = clean_base(JIRA_URL)
     url = f"{base}/rest/api/3/issue/{issue_key}/comment"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     payload = {"body": to_adf_doc(text)}
-    # payload={"body":text}
-    r = requests.post(url, auth=jira_auth(), headers=headers, json=payload)
+    r = api_request("post", url, wi_id=wi_id, issue_key=issue_key,
+                    step="Add Comment", auth=jira_auth(), headers=headers, json=payload)
     if r.status_code not in (200, 201):
         log(f"   ⚠️ Add comment failed: {r.status_code} {r.text}")
 
 
-# Regex to detect bare URLs
 URL_PATTERN = re.compile(r'(https?://\S+)')
 
 def convert_text_with_links(text: str):
-    """
-    Split plain text into ADF parts.
-    Turns bare URLs into clickable Jira ADF links.
-    """
     parts = []
     last_idx = 0
     for match in URL_PATTERN.finditer(text):
         url = match.group(1)
         start, end = match.span()
-
-        # text before the URL
         if start > last_idx:
             parts.append({"type": "text", "text": text[last_idx:start]})
-
-        # the URL itself as a link
         parts.append({
             "type": "text",
             "text": url,
             "marks": [{"type": "link", "attrs": {"href": url}}]
         })
-
         last_idx = end
-
-    # any remaining text after the last URL
     if last_idx < len(text):
         parts.append({"type": "text", "text": text[last_idx:]})
-
     return parts
 
 
-def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
-    """
-    Convert ADO description HTML -> Jira ADF (supports text, links, images).
-    Inline images are downloaded, uploaded to Jira, and embedded into description
-    using mediaId when available. If mediaId missing, falls back to a link paragraph.
-    """
+def process_description_to_adf(issue_key: str, raw_html: str, wi_id=None) -> dict:
     if not raw_html:
         return {"type": "doc", "version": 1, "content": []}
 
     soup = BeautifulSoup(raw_html, "html.parser")
     adf_content = []
-    seen_links: set[str] = set()   # ✅ Track seen links
-
-    # Use find_all on common block-level/nested tags (p, div, br, a, img)
-    # We'll handle text in div/p and single-line breaks.
-    # Normalize: replace <br> with newline so get_text handles it.
-    for br in soup.find_all("br"):
-        br.replace_with("\n")
-
-    # Process block-level elements in document order
-    for element in soup.find_all(["div", "p", "a", "img"], recursive=False ):
-        print(f"\n👉 Processing element: <{element.name}> {str(element)[:80]}...")
-
-        # If it's a div or p, it may contain nested a/img; handle its children
-        if element.name in ("div", "p"):
-            # If element contains images or links, iterate children to preserve order
-            has_child_images = element.find("img")
-            if has_child_images:
-                for child in element.children:
-                    if getattr(child, "name", None) == "img":
-                        src = child.get("src")
-                        print(f"  🖼 Found child <img> src={src}")
-                        if src and ATTACH_URL_SUBSTR in src:
-                            filename = parse_qs(urlparse(src).query or "").get("fileName", ["embedded.png"])[0]
-                            local_file = download_images_to_ado_attachments(src)
-                            if not local_file:
-                                continue
-                            upload = jira_upload_attachment(issue_key, local_file)
-                            # log("Upload Data from the des attachment : ", upload," Asdfg")
-                            if not upload:
-                                continue
-                            # prefer mediaId for embedding
-                            if upload.get("id"):
-                                adf_content.append(
-                                {
-                                    "type": "mediaSingle",
-                                    "content": [
-                                        {
-                                        "type": "media",
-                                        "attrs": {
-                                            "type": "external",
-                                            "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload.get("id")}",
-                                            "width": 710,
-                                            "height": 163
-                                        }
-                                        }
-                                    ]
-                                    }
-                                )
-                            else:
-                                # fallback: insert clickable link to content
-                                adf_content.append({
-                                    "type": "paragraph",
-                                    "content": [{
-                                        "type": "text",
-                                        "text": upload.get("filename") or "Attachment",
-                                        "marks": [{"type": "link", "attrs": {"href": upload.get("content")}}] if upload.get("content") else []
-                                    }]
-                                })
-                    elif getattr(child, "name", None) == "a":
-    # skip here, will be handled in anchor section
-                            continue
-                    else:
-                        text = getattr(child, "get_text", lambda strip=True: str(child))(strip=True)
-                        if text:
-                            print(f"  ✏️ Text inside <p/div>: {text}")
-                            adf_content.append({"type": "paragraph", "content": [{"type": "text", "text": text}]})
-            else:
-                # No images inside — may contain plain text or links
-                if element.find("a"):
-                    block_content = []
-                    for child in element.children:
-                        if getattr(child, "name", None) == "a":
-                            href = child.get("href", "").strip()
-                            label = child.get_text(strip=True) or href
-                            if href:
-                                block_content.append({
-                                    "type": "text",
-                                    "text": label,
-                                    "marks": [{"type": "link", "attrs": {"href": href}}]
-                                })
-                        elif isinstance(child, NavigableString) and child.strip():
-                             block_content.extend(convert_text_with_links(str(child).strip()))
-                    if block_content:
-                        adf_content.append({
-                            "type": "paragraph",
-                            "content": block_content
-                        })
-                else:
-                    # ✅ Only plain text (no links)
-                    text = element.get_text("\n", strip=True).strip()
-                    if text:
-                        print(f"  ✏️ Plain text block: {text}")
-                        adf_content.append({
-                            "type": "paragraph",
-                            "content": convert_text_with_links(text)
-                        })
-
-        elif element.name == "a":
-            href = element.get("href", "").strip()
-            label = element.get_text(strip=True) or href
-            if href:   # ✅ avoid duplicates
-                # seen_links.add(href)
-                adf_content.append({
-                    "type": "paragraph",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": label,
-                            "marks": [{"type": "link", "attrs": {"href": href}}]
-                        }
-                    ]
-                })
-
-        elif element.name == "img":
-            src = element.get("src")
-            upload = {}
-            if src and ATTACH_URL_SUBSTR in src:
-                filename = parse_qs(urlparse(src).query or "").get("fileName", ["embedded.png"])[0]
-
-                local_file = download_images_to_ado_attachments(src)
-                if not local_file:
-                    continue
-
-                upload = jira_upload_attachment(issue_key, local_file)
-                if not upload or not upload.get("id"):
-                    continue
-
-                # ✅ Only embed the media, no extra text
-                adf_content.append(
-                    {
-                    "type": "mediaSingle",
-                    "content": [
-                        {
-                        "type": "media",
-                        "attrs": {
-                            "type": "external",
-                            "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload.get("id")}",
-                            "width": 710,
-                            "height": 163
-                        }
-                        }
-                    ]
-                    }
-                )
-
-            else:
-                # fallback to clickable link to attachment
-                adf_content.append({
-                    "type": "paragraph",
-                    "content": [{
-                        "type": "text",
-                        "text": upload.get("filename") or "Attachment",
-                        "marks": [{"type": "link", "attrs": {"href": upload.get("content")}}] if upload.get("content") else []
-                    }]
-                })
-
-    # If nothing was extracted, as safe fallback put plain text of raw_html
-    if not adf_content:
-        fallback_text = re.sub(r"<[^>]+>", " ", raw_html)
-        fallback_text = html.unescape(fallback_text).strip()
-        if fallback_text:
-            adf_content = [{"type": "paragraph", "content": convert_text_with_links(fallback_text)}]
-
-    # ✅ Debug print final ADF before returning
-    import json
-    print("\n📄 Final ADF Description:")
-    print(json.dumps({"type": "doc", "version": 1, "content": adf_content}, indent=2))
-
-
-    return {"type": "doc", "version": 1, "content": adf_content}
-
-def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
-    """
-    Convert ADO description HTML -> Jira ADF (supports text, links, images).
-    Preserves document order: text/link parts remain inline, images become mediaSingle blocks in place.
-    """
-    if not raw_html:
-        return {"type": "doc", "version": 1, "content": []}
-
-    soup = BeautifulSoup(raw_html, "html.parser")
-
-    # normalize <br> into newline characters
-    # for br in soup.find_all("br"):
-    #     br.replace_with("\n")
-
-    adf_content = []
-    seen_links: set[str] = set()
+    seen_links: set = set()
     block_tags = {"p", "div", "li", "blockquote", "h1", "h2", "h3", "h4", "h5", "h6"}
 
     def flush_paragraph(inline_nodes):
-        """Push inline_nodes into adf_content as a paragraph and clear them."""
         if inline_nodes:
             adf_content.append({"type": "paragraph", "content": inline_nodes.copy()})
             inline_nodes.clear()
@@ -868,78 +559,59 @@ def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
         return {"type": "text", "text": text, "marks": [{"type": "link", "attrs": {"href": href}}]}
 
     def handle_image_tag(img_tag):
-        """Download/upload image and insert mediaSingle (preferred) or fallback link."""
         src = img_tag.get("src") or ""
         if src and ATTACH_URL_SUBSTR in src:
-            local_file = download_images_to_ado_attachments(src)
+            local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
             if not local_file:
                 return
-            upload = jira_upload_attachment(issue_key, local_file)
+            upload = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
             if upload and upload.get("id"):
                 adf_content.append({
                     "type": "mediaSingle",
-                    "content": [{
-                        "type": "media",
-                        "attrs": {
-                            "type": "external",
-                            "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload['id']}",
-                            "width": 710,
-                            "height": 163
-                        }
-                    }]
+                    "content": [{"type": "media", "attrs": {
+                        "type": "external",
+                        "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload['id']}",
+                        "width": 710,
+                        "height": 163
+                    }}]
                 })
             elif upload and upload.get("content"):
-                adf_content.append({
-                    "type": "paragraph",
-                    "content": [{
-                        "type": "text",
-                        "text": upload.get("filename") or "Attachment",
-                        "marks": [{"type": "link", "attrs": {"href": upload["content"]}}]
-                    }]
-                })
-        elif src:
-            # non-ADO image: fallback to link
-            adf_content.append({
-                "type": "paragraph",
-                "content": [{
+                adf_content.append({"type": "paragraph", "content": [{
                     "type": "text",
-                    "text": src,
-                    "marks": [{"type": "link", "attrs": {"href": src}}]
-                }]
-            })
+                    "text": upload.get("filename") or "Attachment",
+                    "marks": [{"type": "link", "attrs": {"href": upload["content"]}}]
+                }]})
+        elif src:
+            adf_content.append({"type": "paragraph", "content": [{
+                "type": "text",
+                "text": src,
+                "marks": [{"type": "link", "attrs": {"href": src}}]
+            }]})
 
     def process_nodes(nodes, inline_acc):
-        """Process nodes sequentially, preserving order."""
         from bs4 import NavigableString, Tag
-
         for node in nodes:
             if isinstance(node, NavigableString):
                 text = str(node).replace("\r", "").replace("\n", " ").strip()
                 if text:
                     inline_acc.append(make_text_node(text))
                 continue
-
             if not isinstance(node, Tag):
                 continue
-
             name = node.name.lower()
-
             if name == "br":
                 inline_acc.append(make_text_node("\n"))
                 continue
-
             if name == "img":
                 if inline_acc:
                     flush_paragraph(inline_acc)
                 handle_image_tag(node)
                 continue
-
             if name == "a":
                 href = (node.get("href") or "").strip()
                 label = node.get_text(strip=True) or href
                 if href:
                     if href in seen_links:
-                        # duplicate link → keep label as plain text
                         inline_acc.append(make_text_node(label))
                     else:
                         seen_links.add(href)
@@ -947,7 +619,6 @@ def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
                 else:
                     inline_acc.append(make_text_node(label))
                 continue
-
             if name in block_tags:
                 if inline_acc:
                     flush_paragraph(inline_acc)
@@ -956,19 +627,15 @@ def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
                 if local_inline:
                     flush_paragraph(local_inline)
                 continue
-
-            # inline container (span, strong, em, etc.)
             process_nodes(node.children, inline_acc)
 
-    # parse top-level nodes
     inline_nodes = []
     process_nodes(soup.contents, inline_nodes)
     if inline_nodes:
         flush_paragraph(inline_nodes)
 
-    # fallback: plain text of raw_html if nothing extracted
     if not adf_content:
-        import re, html as html_lib
+        import html as html_lib
         fallback_text = re.sub(r"<[^>]+>", " ", raw_html)
         fallback_text = html_lib.unescape(fallback_text).strip()
         if fallback_text:
@@ -977,32 +644,26 @@ def process_description_to_adf(issue_key: str, raw_html: str) -> dict:
     return {"type": "doc", "version": 1, "content": adf_content}
 
 
-def process_description_with_attachments(issue_key: str, raw_html: str) -> Dict:
-    """Convert ADO HTML description into Jira ADF with images preserved."""
+def process_description_with_attachments(issue_key: str, raw_html: str, wi_id=None) -> Dict:
     if not raw_html:
         return to_adf_doc("")
-
     soup = BeautifulSoup(raw_html, "html.parser")
-
-    # Collect images
     for img in soup.find_all("img"):
         src = img.get("src")
         if src and ATTACH_URL_SUBSTR in src:
             filename = parse_qs(urlparse(src).query or "").get("fileName", ["embedded.png"])[0]
-            local_file = download_images_to_ado_attachments(src)
-            content_url = jira_upload_attachment(issue_key, local_file)
+            local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+            content_url = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
             if content_url:
-                 img.replace_with(f"!{filename}!")
-
-
-    # Handle links <a>
+                img.replace_with(f"!{filename}!")
     for a in soup.find_all("a"):
         href = a.get("href", "").strip()
         text = a.get_text(strip=True) or href
         a.replace_with(f"[{text}|{href}]")
-
     clean_text = soup.get_text("\n").strip()
     return to_adf_doc(clean_text)
+
+
 from bs4 import BeautifulSoup
 
 def clean_html_steps(html_text):
@@ -1011,18 +672,14 @@ def clean_html_steps(html_text):
     return BeautifulSoup(html_text, "html.parser").get_text(separator=" ", strip=True)
 
 def steps_formatter(xml_data):
-    global steps_payload  
+    global steps_payload
     print(xml_data)
-
     if not xml_data or not xml_data.strip():
         print("No steps found in ADO work item.")
         return {}
-
     root = ET.fromstring(xml_data)
-    seen_steps = set()  # To avoid duplicates
+    seen_steps = set()
     step_no = 0
-
-    # Base Jira table structure
     jira_payload = {
         "fields": {
             "customfield_10632": {
@@ -1033,7 +690,6 @@ def steps_formatter(xml_data):
                         "type": "table",
                         "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
                         "content": [
-                            # Header row
                             {
                                 "type": "tableRow",
                                 "content": [
@@ -1049,35 +705,26 @@ def steps_formatter(xml_data):
             }
         }
     }
-
     table_content = jira_payload["fields"]["customfield_10632"]["content"][0]["content"]
-
-    # Sort steps by ID to ensure order
     steps_sorted = sorted(root.findall(".//step[@type]"), key=lambda x: int(x.get("id", 0)))
-
     for step in steps_sorted:
         step_type = step.get("type")
         ps_list = step.findall("parameterizedString")
         action_text = ""
         expected_text = ""
-
         if step_type == "ActionStep":
-            # Combine all non-empty parameterizedString texts
             action_text = " ".join(clean_html_steps(p.text) for p in ps_list if p.text)
-            expected_text = " "  # ActionStep has no expected results
+            expected_text = " "
         elif step_type == "ValidateStep":
             if len(ps_list) >= 2:
                 action_text = clean_html_steps(ps_list[0].text)
                 expected_text = clean_html_steps(ps_list[1].text)
-
-        # Skip duplicates and empty steps
         step_key = f"{step_type}-{action_text}-{expected_text}"
         if not action_text and not expected_text:
             continue
         if step_key in seen_steps:
             continue
         seen_steps.add(step_key)
-
         step_no += 1
         table_row = {
             "type": "tableRow",
@@ -1089,115 +736,71 @@ def steps_formatter(xml_data):
             ],
         }
         table_content.append(table_row)
-
     steps_payload = json.dumps(jira_payload, indent=2)
     print(steps_payload)
     return steps_payload
 
-### For repro steps convert_ado_reprosteps_to_jira_adf and download_and_upload_reprosteps_images functions are used
-def download_and_upload_reprosteps_images(issue_key: str, repro_html: str) -> Dict[str, str]:
-    """
-    Extract all <img> URLs from ReproSteps HTML, download them,
-    upload to Jira, and return mapping: {ADO URL → Jira attachment ID}
-    """
+
+def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id=None) -> Dict[str, str]:
     attachment_map = {}
     if not repro_html:
         return attachment_map
-
     soup = BeautifulSoup(repro_html, "html.parser")
     imgs = soup.find_all("img")
-
     for img in imgs:
         src = img.get("src")
         if src and ATTACH_URL_SUBSTR in src and src not in attachment_map:
-            # Get filename from URL
             filename = parse_qs(urlparse(src).query or "").get("fileName", ["attachment.png"])[0]
-            
-            # Download from ADO
-            local_file = ado_download_attachment(src, filename)
+            local_file = ado_download_attachment(src, filename, wi_id=wi_id, issue_key=issue_key)
             if not local_file:
                 log(f"   ⚠️ Failed to download: {src}")
                 continue
-            
-            # Upload to Jira
-            upload_info = jira_upload_attachment(issue_key, local_file)
+            upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
             if upload_info and upload_info.get("id"):
                 attachment_map[src] = upload_info["id"]
                 log(f"   ✅ Mapped: {filename} → Jira ID {upload_info['id']}")
             else:
                 log(f"   ⚠️ Failed to upload: {filename}")
-
     return attachment_map
 
 
 def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str, str] = None, issue_key: str = None) -> Dict:
-    """
-    Converts ADO ReproSteps HTML → Jira ADF.
-    Handles: tables with images, plain tables, text, text with images
-    Uses attachment_map to replace <img> with Jira file attachments
-    """
     if not html_input:
         return {"type": "doc", "version": 1, "content": []}
-
     soup = BeautifulSoup(html_input, "html.parser")
     doc_content: List = []
     attachment_map = attachment_map or {}
 
     def create_media_node(src: str, use_external_fallback: bool = True):
-        """Helper to create media node with proper error handling"""
         if src in attachment_map:
             jira_id = attachment_map[src]
-            # Use external URL approach for better reliability
             base = clean_base(JIRA_URL)
             attachment_url = f"{base}/rest/api/3/attachment/content/{jira_id}"
             return {
                 "type": "mediaSingle",
                 "attrs": {"layout": "center"},
-                "content": [{
-                    "type": "media",
-                    "attrs": {
-                        "type": "external",
-                        "url": attachment_url
-                    }
-                }]
+                "content": [{"type": "media", "attrs": {"type": "external", "url": attachment_url}}]
             }
         elif use_external_fallback:
-            # Fallback: external URL (original ADO URL)
             return {
                 "type": "mediaSingle",
                 "attrs": {"layout": "center"},
-                "content": [{
-                    "type": "media",
-                    "attrs": {
-                        "type": "external",
-                        "url": src
-                    }
-                }]
+                "content": [{"type": "media", "attrs": {"type": "external", "url": src}}]
             }
         return None
 
     def process_text_content(element):
-        """Process text content with formatting (bold, etc.)"""
         para_content = []
-        
         for child in element.children:
             if hasattr(child, 'name'):
                 if child.name in ["b", "strong"]:
                     text = child.get_text(strip=True)
                     if text:
-                        para_content.append({
-                            "type": "text",
-                            "text": text,
-                            "marks": [{"type": "strong"}]
-                        })
+                        para_content.append({"type": "text", "text": text, "marks": [{"type": "strong"}]})
                 elif child.name in ["i", "em"]:
                     text = child.get_text(strip=True)
                     if text:
-                        para_content.append({
-                            "type": "text",
-                            "text": text,
-                            "marks": [{"type": "em"}]
-                        })
+                        para_content.append({"type": "text", "text": text, "marks": [{"type": "em"}]})
                 elif child.name == "br":
                     para_content.append({"type": "hardBreak"})
                 elif child.name in ["div", "span", "p"]:
@@ -1212,12 +815,8 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                 text = child.strip()
                 if text:
                     para_content.append({"type": "text", "text": text})
-        
         return para_content
 
-    # ===========================================
-    # 1. PROCESS TABLES (with or without images)
-    # ===========================================
     tables = soup.find_all("table")
     for table in tables:
         rows = []
@@ -1225,75 +824,38 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
             cells = []
             for td in tr.find_all(["td", "th"]):
                 cell_blocks = []
-
-                # --- Handle images in cells ---
-                images_found = False
                 for img in td.find_all("img"):
                     src = img.get("src")
                     if src:
                         media_node = create_media_node(src)
                         if media_node:
                             cell_blocks.append(media_node)
-                            images_found = True
-                    img.decompose()  # Remove img so it doesn't appear in text
-
-                # --- Handle text in cells ---
+                    img.decompose()
                 cell_text = td.get_text(" ", strip=True)
                 if cell_text:
                     para_content = process_text_content(td)
-                    
                     if para_content:
-                        cell_blocks.append({
-                            "type": "paragraph",
-                            "content": para_content
-                        })
-
-                # If cell is empty, add empty paragraph
+                        cell_blocks.append({"type": "paragraph", "content": para_content})
                 if not cell_blocks:
                     cell_blocks = [{"type": "paragraph", "content": []}]
-
-                # Determine cell type (header vs regular)
                 cell_type = "tableHeader" if td.name == "th" else "tableCell"
                 cells.append({"type": cell_type, "content": cell_blocks})
-            
             if cells:
                 rows.append({"type": "tableRow", "content": cells})
-
         if rows:
-            doc_content.append({
-                "type": "table",
-                "attrs": {
-                    "isNumberColumnEnabled": False,
-                    "layout": "default"
-                },
-                "content": rows
-            })
-        
-        # Remove processed table from soup
+            doc_content.append({"type": "table", "attrs": {"isNumberColumnEnabled": False, "layout": "default"}, "content": rows})
         table.decompose()
 
-    # Add separator after tables if any were processed
     if tables and doc_content:
         doc_content.append({"type": "rule"})
 
-    # ===========================================
-    # 2. PROCESS NON-TABLE CONTENT (text with/without images)
-    # ===========================================
-    
-    # Process remaining content
     remaining_elements = soup.find_all(["div", "p", "img"], recursive=False)
-    
-    # If no specific elements found, get all remaining text
     if not remaining_elements:
         remaining_text = soup.get_text(" ", strip=True)
         if remaining_text:
-            doc_content.append({
-                "type": "paragraph",
-                "content": [{"type": "text", "text": remaining_text}]
-            })
+            doc_content.append({"type": "paragraph", "content": [{"type": "text", "text": remaining_text}]})
     else:
         for element in remaining_elements:
-            # Handle standalone images
             if element.name == "img":
                 src = element.get("src")
                 if src:
@@ -1302,8 +864,6 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                         doc_content.append(media_node)
                 element.decompose()
                 continue
-            
-            # --- Handle images within divs/paragraphs ---
             for img in element.find_all("img"):
                 src = img.get("src")
                 if src:
@@ -1311,308 +871,17 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                     if media_node:
                         doc_content.append(media_node)
                 img.decompose()
-
-            # --- Handle text paragraphs ---
             text = element.get_text(" ", strip=True)
             if text:
                 para_content = process_text_content(element)
-                
                 if para_content:
-                    doc_content.append({
-                        "type": "paragraph",
-                        "content": para_content
-                    })
+                    doc_content.append({"type": "paragraph", "content": para_content})
 
-    # If no content at all, add empty paragraph
     if not doc_content:
         doc_content = [{"type": "paragraph", "content": []}]
-    
+
     return {"type": "doc", "version": 1, "content": doc_content}
 
-
-# def build_jira_fields_from_ado(wi: Dict) -> Dict:
-#     global steps_payload
-#     steps_payload = None
-
-#     f = wi.get("fields", {})
-#     # print(f,"testfields")
-#     steps=f.get("Microsoft.VSTS.TCM.Steps"," ")
-#     print(steps,"steps_field")
-#     if steps:
-#         steps_payload=steps_formatter(steps)
-
-#     summary = f.get("System.Title", "No Title")
-#     raw_desc = f.get("System.Description", "")
-#     desc_text = clean_html_to_text(raw_desc)
-
-#     ado_type = f.get("System.WorkItemType", "Task")
-#     jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
-
-#     tags = f.get("System.Tags", "")
-
-#     labels: List[str] = []
-#     if tags:
-#         parts = re.split(r"[;,]", tags)
-#         labels = [p.strip().replace(" ", "-") for p in parts if p.strip()]
-
-#     # ado_priority_val = f.get("Microsoft.VSTS.Common.Priority")
-#     # try:
-#     #     ado_priority_int = int(ado_priority_val) if ado_priority_val is not None else None
-#     # except Exception:
-#     #     ado_priority_int = None
-#     # jira_priority_name = PRIORITY_MAP.get(ado_priority_int or -1)
-
-#     assignee_email = None
-#     assigned_to = f.get("System.AssignedTo")
-#     if isinstance(assigned_to, dict):
-#         assignee_email = assigned_to.get("uniqueName") or assigned_to.get("mail")
-
-#     # Save original ADO state for post-creation transition
-#     ado_state = f.get("System.State", "New")
-#     print(f.get("System.CreatedDate"))
-#     print(f.get("Microsoft.VSTS.Scheduling.TargetDate"))
-#     print(f,"test")
-#     fields: Dict = {
-#         "project": {"key": JIRA_PROJECT_KEY},
-#         "summary": summary,
-#         "issuetype": {"name": jira_issuetype},
-#         "description" : to_adf_doc(" "), # set placeholder first
-
-#         "labels": labels,
-        
-#        "customfield_10015": convert_ado_datetime(
-#         f.get("System.CreatedDate", "")
-#         ),
-
-#         "duedate": convert_ado_datetime(
-#         f.get("Microsoft.VSTS.Scheduling.TargetDate", "")
-#         )
-         
-#         }
-    
-#     fields["customfield_10015"] = convert_ado_datetime(
-#         f.get("System.CreatedDate")
-#         )
-
-#     # Priority Rank
-#     priority_rank = f.get("Custom.PriorityRank")
-#     if priority_rank is not None:
-#         try:
-#             fields["customfield_11700"] = float(priority_rank) 
-#         except ValueError:
-#             pass
-
-
-#     # Add Blocking Type (single select)
-#     blocking_type = f.get("Custom.BlockingType")
-#     if blocking_type:
-#         fields["customfield_11699"] = { "value": blocking_type }
-
-#     # Bug Severity
-#     bug_severity = f.get("Custom.BugSeverity")
-#     if bug_severity:
-#         fields["customfield_10090"] = { "value": bug_severity }
-
-#     # Map Custom.BugPriority → Jira system priority
-#     bug_priority = f.get("Custom.BugPriority")   # Example: "P2 - Major"
-#     if bug_priority:
-#         # extract P1/P2/P3...
-#         match = re.match(r"(P\d+)", bug_priority)
-#         if match:
-#             ado_code = match.group(1)  # P2
-#             mapped = BUG_PRIORITY_MAP.get(ado_code)
-#             if mapped:
-#                 fields["priority"] = {"name": mapped}
-
-#     resolved_reason = f.get("Microsoft.VSTS.Common.ResolvedReason")
-#     if resolved_reason:
-#         jira_resolution = RESOLUTION_MAP.get(resolved_reason)
-#         if jira_resolution:
-#             fields["resolution"] = {"name": jira_resolution}
-
-#     release_notes_status = f.get("Custom.ReleaseNotesStatus")
-#     if release_notes_status:
-#         fields["customfield_11701"] = {"value": release_notes_status} 
-
-#     # Custom field: Value Stream (single-select)
-#     value_stream = f.get("Custom.ValueStream")
-#     if value_stream:
-#         fields["customfield_11702"] = {"value": value_stream}  
-
-#     customer_name = f.get("Custom.CustomerName")
-#     if customer_name:
-#         # ADO multi-select values are semicolon-separated
-#         parts = [c.strip() for c in customer_name.split(";") if c.strip()]
-#         fields["customfield_12350"] = [{"value": p} for p in parts]
-
-#     provider_type = f.get("Custom.ProviderType")
-#     if provider_type:
-#         # ADO multi-select values are semicolon-separated
-#         parts = [p.strip() for p in provider_type.split(";") if p.strip()]
-#         fields["customfield_12383"] = [{"value": p} for p in parts]
-
-#     product = f.get("Custom.Product")  
-#     if product:
-#         fields["customfield_11703"] = {"value": product} 
-
-#     bug_area = f.get("Custom.BugArea") 
-#     if bug_area:
-#         fields["customfield_11704"] = {"value": bug_area}  
-
-#     bug_type = f.get("Custom.BugType") 
-#     if bug_type:
-#         fields["customfield_11705"] = {"value": bug_type}  
-
-#     found_by_automation = f.get("Custom.FoundbyAutomation")  
-#     if found_by_automation:
-#         fields["customfield_11706"] = {"value": found_by_automation}  
-
-#     deliverable_type = f.get("Custom.DeliverableType") 
-#     if deliverable_type:
-#         fields["customfield_11707"] = {"value": deliverable_type}  
-
-#     risk_opened = f.get("Custom.RiskOpened")  
-#     if risk_opened is not None:
-#         fields["customfield_11708"] = {"value": "True" if risk_opened else "False"}  
-
-#     original_estimate = f.get("Microsoft.VSTS.Scheduling.OriginalEstimate")
-#     if original_estimate is not None:
-#         try:
-#             fields["customfield_11718"] = float(original_estimate)  
-#         except ValueError:
-#             pass
-
-#     remaining_work = f.get("Microsoft.VSTS.Scheduling.RemainingWork")
-#     if remaining_work is not None:
-#         try:
-#             fields["customfield_11719"] = float(remaining_work)  
-#         except ValueError:
-#             pass
-
-#     completed_work = f.get("Microsoft.VSTS.Scheduling.CompletedWork")
-#     if completed_work is not None:
-#         try:
-#             fields["customfield_11720"] = float(completed_work)   
-#         except ValueError:
-#             pass
-
-#     branch_name = f.get("Custom.BranchName")
-#     if branch_name:
-#         fields["customfield_11710"] = str(branch_name)   
-
-#     environment = f.get("Custom.EnvironmentFoundIn")
-#     if environment:
-#         parts = [e.strip().strip('"') for e in env_found_in.split(";") if e.strip()]
-#         fields["customfield_11709"] = ", ".join(parts)
-
-#     # Hotfix Production Date → Jira custom field
-#     hotfix_production_date = f.get("Custom.HotfixProductionDate")
-#     if hotfix_production_date:
-#         fields["customfield_12416"] = convert_ado_datetime(hotfix_production_date)
-
-#     release_val = f.get("Custom.Release")
-#     if release_val:
-#         fields["customfield_11712"] = { "value": release_val }
-
-#     # Environment Found In (single select)
-#     environment_found_in = f.get("Custom.EnvironmentFoundIn")
-#     if environment_found_in:
-#         fields["customfield_11715"] = {"value": environment_found_in}
-
-#     found_in_build = f.get("Microsoft.VSTS.Build.FoundIn")
-#     if found_in_build:
-#         fields["customfield_11713"] = str(found_in_build)  
-
-#     # Integration Build → Jira text field
-#     integrated_in_build = f.get("Microsoft.VSTS.Build.IntegrationBuild")
-#     if integrated_in_build:
-#         fields["customfield_11714"] = str(integrated_in_build)
-
-#     # if jira_priority_name:
-#     #     fields["priority"] = {"name": jira_priority_name}
-
-
-#     account_id = get_jira_account_id_for_email(assignee_email)
-#     print(f"🔎 ADO assignee email: {assignee_email}")
-#     print(f"🔎 Jira accountId mapped: {account_id}")
-    
-#     if account_id:
-#         fields["assignee"] = {"id": account_id}
-
-#     # Reporter mapping (NEW — ADD HERE)
-#     created_by = f.get("System.CreatedBy")
-#     reporter_email = None
-#     if isinstance(created_by, dict):
-#         reporter_email = created_by.get("uniqueName", "").lower().strip()
-
-#     if reporter_email in USER_MAP:
-#         fields["reporter"] = {"id": USER_MAP[reporter_email]}
-#     else:
-#         fields["reporter"] = {"id": DEFAULT_REPORTER_ACCOUNT_ID}
-
-#     implementation_date = convert_ado_datetime(f.get("Custom.ImplementationDate"))
-#     if implementation_date:
-#         fields["customfield_11755"] = implementation_date
-
-#     status_dropdown = f.get("Custom.StatusDropdown")
-#     if status_dropdown:
-#         fields["customfield_11756"] = {"value": status_dropdown}
-
-#     cap_author = f.get("Custom.CAPAuthor")
-#     if cap_author:
-#         account_id = get_jira_account_id_for_email(cap_author)
-#         if account_id:
-#             fields["customfield_11758"] = {"id": account_id}
-
-
-#     corrective_action_plan = f.get("Microsoft.VSTS.CMMI.CorrectiveActionPlan")
-#     if corrective_action_plan:
-#         clean_html = clean_html_to_text(corrective_action_plan)
-#         fields["customfield_11757"] = to_adf_doc(clean_html)
-
-#     # tshirt_size = f.get("Custom.TShirtSize")
-#     # print(tshirt_size)
-#     # if tshirt_size:
-#     #     fields["customfield_11633"] = {"value": tshirt_size}
-#     # print(fields,"tshirt_size")
-
-#     # wid = f.get("System.Id")
-#     # print(wid)
-#     # if wid:
-#     #     fields["customfield_11600"] = str(wid)
-
-#     # Replaces the ADO ID Link
-#     wid = f.get("System.Id")
-#     print(wid)
-#     if wid:
-#         # Store the ID in your custom field
-#         fields["customfield_11600"] = str(wid)
-
-#         # Build the ADO work item URL (UI link)
-#         ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
-#         ado_ui_link = f"{ado_base}/_workitems/edit/{wid}"
-
-#         # Optionally, store this link in another custom field in Jira
-#         fields["customfield_11600"] = ado_ui_link  # replace XXXXX with your custom field ID
-#         print("ADO WorkItem Link:", ado_ui_link)
-
-#     area = f.get("System.AreaPath")
-#     print(area)
-#     if area:
-#         fields["customfield_11601"] = str(area)
-
-#     iteration = f.get("System.IterationPath")
-#     print(iteration)
-#     if iteration:
-#         fields["customfield_11602"] = str(iteration)
-
-#     reason = f.get("System.Reason")
-#     print(reason)
-#     if reason:
-#         fields["customfield_11603"] = str(reason)
-    
-
-#     return fields
 
 def build_jira_fields_from_ado(wi: Dict) -> Dict:
     global steps_payload
@@ -1620,8 +889,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
     f = wi.get("fields", {})
     wi_id = wi.get("id")
-    
-    # Get steps field
+
     steps = f.get("Microsoft.VSTS.TCM.Steps", " ")
     print(steps, "steps_field")
     if steps:
@@ -1633,7 +901,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Steps Field", "Skipped", "No steps in ADO")
 
-    # Basic fields
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
     desc_text = clean_html_to_text(raw_desc)
@@ -1642,7 +909,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
     log_to_excel(wi_id, None, "Issue Type Mapping", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
-    # Tags/Labels
     tags = f.get("System.Tags", "")
     labels: List[str] = []
     if tags:
@@ -1655,24 +921,21 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Labels", "Skipped", "No tags in ADO")
 
-    # Priority
     ado_priority_val = f.get("Microsoft.VSTS.Common.Priority")
     try:
         ado_priority_int = int(ado_priority_val) if ado_priority_val is not None else None
     except Exception:
         ado_priority_int = None
-        
+
     jira_priority_name = PRIORITY_MAP.get(ado_priority_int or -1)
 
-    # Assignee mapping
     assignee_email = None
     assigned_to = f.get("System.AssignedTo")
     if isinstance(assigned_to, dict):
         assignee_email = assigned_to.get("uniqueName") or assigned_to.get("mail")
 
     ado_state = f.get("System.State", "New")
-    
-    # Initialize fields
+
     fields: Dict = {
         "project": {"key": JIRA_PROJECT_KEY},
         "summary": summary,
@@ -1681,7 +944,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         "labels": labels,
     }
 
-    # Priority (if mapped)
     if jira_priority_name:
         try:
             fields["priority"] = {"name": jira_priority_name}
@@ -1691,7 +953,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Priority", "Skipped", "No priority mapping")
 
-    # Value Stream (customfield_11702)
     value_stream = f.get("Custom.ValueStream")
     if value_stream:
         try:
@@ -1702,9 +963,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Value Stream", "Skipped", "No value stream in ADO")
 
-    # T-Shirt Size
     tshirt_size = f.get("Custom.TShirtSize")
-    print(tshirt_size)
     if tshirt_size:
         try:
             fields["customfield_11791"] = {"value": tshirt_size}
@@ -1714,18 +973,16 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "T-Shirt Size", "Skipped", "No t-shirt size in ADO")
 
-    # Priority Rank
     priority_rank = f.get("Custom.PriorityRank")
     if priority_rank is not None:
         try:
             fields["customfield_11700"] = float(priority_rank)
             log_to_excel(wi_id, None, "Priority Rank", "Success", f"Value: {priority_rank}")
-        except ValueError as e:
+        except ValueError:
             log_to_excel(wi_id, None, "Priority Rank", "Error", f"Invalid value: {priority_rank}")
     else:
         log_to_excel(wi_id, None, "Priority Rank", "Skipped", "No priority rank in ADO")
 
-    # Created Date
     created_date = f.get("System.CreatedDate")
     if created_date:
         try:
@@ -1736,7 +993,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Created Date", "Skipped", "No created date in ADO")
 
-    # Start Date
     start_date = f.get("Microsoft.VSTS.Scheduling.StartDate")
     if start_date:
         try:
@@ -1747,7 +1003,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Start Date", "Skipped", "No start date in ADO")
 
-    # Due Date
     target_date = f.get("Microsoft.VSTS.Scheduling.TargetDate")
     if target_date:
         try:
@@ -1758,7 +1013,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Due Date", "Skipped", "No target date in ADO")
 
-    # Pre Prod Date
     pre_prod_date = f.get("Custom.PreProdDate")
     if pre_prod_date:
         try:
@@ -1769,7 +1023,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Pre Prod Date", "Skipped", "No PreProdDate in ADO")
 
-    # Billable (customfield_12450)
     billable = f.get("Custom.Billable")
     if billable:
         try:
@@ -1780,7 +1033,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Billable", "Skipped", "No Billable value in ADO")
 
-    # Feature Type (customfield_12451)
     feature_type = f.get("Custom.FeatureType")
     if feature_type:
         try:
@@ -1791,7 +1043,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Feature Type", "Skipped", "No Feature Type in ADO")
 
-    # Identified Area (customfield_12452)
     identified_area = f.get("Custom.IdentifiedArea")
     if identified_area:
         try:
@@ -1802,7 +1053,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Identified Area", "Skipped", "No Identified Area in ADO")
 
-    # Criticality (customfield_12453)
     criticality = f.get("Custom.Criticality")
     if criticality:
         try:
@@ -1813,7 +1063,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Criticality", "Skipped", "No Criticality in ADO")
 
-    # Branch Name (customfield_11710)
     branch_name = f.get("Custom.BranchName")
     if branch_name:
         try:
@@ -1824,7 +1073,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Branch Name", "Skipped", "No branch name in ADO")
 
-    # Environment Found In (customfield_11715)
     environment_found_in = f.get("Custom.EnvironmentFoundIn")
     if environment_found_in:
         try:
@@ -1835,7 +1083,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Environment Found In", "Skipped", "No environment found in ADO")
 
-    # Release (customfield_11712)
     release = f.get("Custom.Release")
     if release:
         try:
@@ -1846,7 +1093,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Release", "Skipped", "No release in ADO")
 
-    # Scope (customfield_12454)
     scope = f.get("Custom.Scope")
     if scope:
         try:
@@ -1857,7 +1103,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Scope", "Skipped", "No Scope in ADO")
 
-    # Control Type (customfield_12455)
     control_type = f.get("Custom.ControlType")
     if control_type:
         try:
@@ -1868,40 +1113,36 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Control Type", "Skipped", "No Control Type in ADO")
 
-    # Original Estimate (customfield_11718)
     original_estimate = f.get("Microsoft.VSTS.Scheduling.OriginalEstimate")
     if original_estimate is not None:
         try:
             fields["customfield_11718"] = float(original_estimate)
             log_to_excel(wi_id, None, "Original Estimate", "Success", f"Value: {original_estimate}")
-        except ValueError as e:
+        except ValueError:
             log_to_excel(wi_id, None, "Original Estimate", "Error", f"Invalid value: {original_estimate}")
     else:
         log_to_excel(wi_id, None, "Original Estimate", "Skipped", "No original estimate in ADO")
 
-    # Remaining Work (customfield_11719)
     remaining_work = f.get("Microsoft.VSTS.Scheduling.RemainingWork")
     if remaining_work is not None:
         try:
             fields["customfield_11719"] = float(remaining_work)
             log_to_excel(wi_id, None, "Remaining Work", "Success", f"Value: {remaining_work}")
-        except ValueError as e:
+        except ValueError:
             log_to_excel(wi_id, None, "Remaining Work", "Error", f"Invalid value: {remaining_work}")
     else:
         log_to_excel(wi_id, None, "Remaining Work", "Skipped", "No remaining work in ADO")
 
-    # Completed Work (customfield_11720)
     completed_work = f.get("Microsoft.VSTS.Scheduling.CompletedWork")
     if completed_work is not None:
         try:
             fields["customfield_11720"] = float(completed_work)
             log_to_excel(wi_id, None, "Completed Work", "Success", f"Value: {completed_work}")
-        except ValueError as e:
+        except ValueError:
             log_to_excel(wi_id, None, "Completed Work", "Error", f"Invalid value: {completed_work}")
     else:
         log_to_excel(wi_id, None, "Completed Work", "Skipped", "No completed work in ADO")
 
-    # Customer Name (customfield_12350) - Multi-select
     customer_name = f.get("Custom.CustomerName")
     if customer_name:
         try:
@@ -1913,7 +1154,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Customer Name", "Skipped", "No customer name in ADO")
 
-    # Provider Type (customfield_12383) - Multi-select
     provider_type = f.get("Custom.ProviderType")
     if provider_type:
         try:
@@ -1925,7 +1165,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Provider Type", "Skipped", "No provider type in ADO")
 
-    # Custom Status
     custom_status = f.get("Custom.Status")
     if custom_status:
         try:
@@ -1936,7 +1175,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Custom Status", "Skipped", "No custom status in ADO")
 
-    # Change Order (customfield_12456)
     change_order = f.get("Custom.ChangeOrder")
     if change_order:
         try:
@@ -1947,7 +1185,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Change Order", "Skipped", "No Change Order in ADO")
 
-    # Cost Estimate (customfield_12457)
     cost_estimate = f.get("Custom.CostEstimate")
     if cost_estimate:
         try:
@@ -1958,7 +1195,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Cost Estimate", "Skipped", "No Cost Estimate in ADO")
 
-    # Actual (customfield_12458)
     actual = f.get("Custom.Actual")
     if actual:
         try:
@@ -1969,7 +1205,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Actual", "Skipped", "No Actual value in ADO")
 
-    # Client Due Date (customfield_12459)
     client_due_date = f.get("Microsoft.VSTS.Scheduling.DueDate")
     if client_due_date:
         try:
@@ -1984,7 +1219,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     account_id = get_jira_account_id_for_email(assignee_email)
     print(f"🔎 ADO assignee email: {assignee_email}")
     print(f"🔎 Jira accountId mapped: {account_id}")
-    
+
     if account_id:
         try:
             fields["assignee"] = {"id": account_id}
@@ -2000,7 +1235,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Reporter mapping
     created_by = f.get("System.CreatedBy")
     reporter_email = None
-
     if isinstance(created_by, dict):
         reporter_email = created_by.get("uniqueName") or created_by.get("mail")
         if reporter_email and isinstance(reporter_email, str):
@@ -2016,15 +1250,14 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Reporter", "Error", str(e)[:100])
     else:
         try:
-            fields["reporter"] = {"id": DEFAULT_REPORTER_ACCOUNT_ID}
+            fields["reporter"] = {"id": JIRA_ACCOUNT_ID}
             if reporter_email:
                 log_to_excel(wi_id, None, "Reporter", "Warning", f"No mapping for {reporter_email}, using default")
             else:
                 log_to_excel(wi_id, None, "Reporter", "Info", "Using default reporter - no email found")
         except Exception as e:
             log_to_excel(wi_id, None, "Reporter", "Error", str(e)[:100])
-    
-    # Deliverable Type (customfield_11707)
+
     deliverable_type = f.get("Custom.DeliverableType")
     if deliverable_type:
         try:
@@ -2035,7 +1268,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Deliverable Type", "Skipped", "No deliverable type in ADO")
 
-    # Content Team Solutioning Support (customfield_12460)
     content_team_solutioning_support = f.get("Custom.ContentTeamSolutioningSupport")
     if content_team_solutioning_support:
         try:
@@ -2046,7 +1278,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Content Team Solutioning Support", "Skipped", "No Content Team Solutioning Support in ADO")
 
-    # Client Scope (customfield_12461)
     client_scope = f.get("Custom.ClientScope")
     if client_scope:
         try:
@@ -2057,7 +1288,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Client Scope", "Skipped", "No Client Scope in ADO")
 
-    # Priority Level
     priority_level = f.get("Custom.PriorityLevel")
     if priority_level:
         try:
@@ -2068,7 +1298,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Priority Level", "Skipped", "No priority level in ADO")
 
-    # Strategic Theme
     strategic_theme = f.get("Custom.StrategicTheme")
     if strategic_theme:
         try:
@@ -2079,18 +1308,16 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Strategic Theme", "Skipped", "No strategic theme in ADO")
 
-    # Module Type
     module_type = f.get("Custom.ModuleType")
     if module_type:
         try:
-            fields["customfield_11797"] = {"value": module_type}
+            fields["customfield_11797"] = [{"value": module_type}]
             log_to_excel(wi_id, None, "Module Type", "Success", f"Value: {module_type}")
         except Exception as e:
             log_to_excel(wi_id, None, "Module Type", "Error", str(e)[:100])
     else:
         log_to_excel(wi_id, None, "Module Type", "Skipped", "No module type in ADO")
 
-    # Horizon
     horizon = f.get("Custom.Horizon")
     if horizon:
         try:
@@ -2101,7 +1328,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Horizon", "Skipped", "No horizon in ADO")
 
-    # Value Drivers
     value_drivers = f.get("Custom.ValueDrivers")
     if value_drivers:
         try:
@@ -2112,7 +1338,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Value Drivers", "Skipped", "No value drivers in ADO")
 
-    # Business Objective
     business_objective = f.get("Custom.BusinessObjectiveOKR")
     if business_objective:
         try:
@@ -2123,7 +1348,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Business Objective", "Skipped", "No business objective in ADO")
 
-    # Team Dependency (multi-select)
     team_dependency = f.get("Custom.TeamDependency")
     if team_dependency:
         try:
@@ -2135,7 +1359,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Team Dependency", "Skipped", "No team dependency in ADO")
 
-    # PI (multi-select)
     pi_values = f.get("Custom.PI")
     if pi_values:
         try:
@@ -2147,19 +1370,12 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "PI", "Skipped", "No PI values in ADO")
 
-    # ADO Work Item Link
     wid = f.get("System.Id")
     print(wid)
     if wid:
         try:
-            # Store the ID in your custom field
-            fields["customfield_11600"] = str(wid)
-
-            # Build the ADO work item URL (UI link)
             ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
             ado_ui_link = f"{ado_base}/_workitems/edit/{wid}"
-
-            # Optionally, store this link in another custom field in Jira
             fields["customfield_11600"] = ado_ui_link
             print("ADO WorkItem Link:", ado_ui_link)
             log_to_excel(wi_id, None, "ADO Work Item Link", "Success", f"Link: {ado_ui_link}")
@@ -2168,9 +1384,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "ADO Work Item Link", "Warning", "No System.Id found")
 
-    # Area Path
     area = f.get("System.AreaPath")
-    print(area)
     if area:
         try:
             fields["customfield_11601"] = str(area)
@@ -2180,9 +1394,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Area Path", "Skipped", "No area path in ADO")
 
-    # Iteration Path
     iteration = f.get("System.IterationPath")
-    print(iteration)
     if iteration:
         try:
             fields["customfield_11602"] = str(iteration)
@@ -2192,9 +1404,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Iteration Path", "Skipped", "No iteration path in ADO")
 
-    # Reason
     reason = f.get("System.Reason")
-    print(reason)
     if reason:
         try:
             fields["customfield_11603"] = str(reason)
@@ -2204,25 +1414,28 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     else:
         log_to_excel(wi_id, None, "Reason", "Skipped", "No reason in ADO")
 
-    # Log completion
     log_to_excel(wi_id, None, "Build Fields", "Completed", f"Built {len(fields)} fields successfully")
-    
     return fields
+
 
 OUTPUT_DIR = "ado_attachments"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-def jira_transition_issue(issue_key: str, ado_state: str):
+
+def jira_transition_issue(issue_key: str, ado_state: str, wi_id=None):
     target_status = STATE_MAP.get(ado_state)
     if not target_status:
+        log_to_excel(wi_id, issue_key, "Transition", "Skipped", f"No mapping for ADO state: {ado_state}")
         return
 
     base = clean_base(JIRA_URL)
-    # Get available transitions
     url = f"{base}/rest/api/3/issue/{issue_key}/transitions"
-    r = requests.get(url, auth=jira_auth(), headers={"Accept": "application/json"})
+    r = api_request("get", url, wi_id=wi_id, issue_key=issue_key,
+                    step="Fetch Transitions", auth=jira_auth(),
+                    headers={"Accept": "application/json"})
     if r.status_code != 200:
         log(f"⚠️ Failed to fetch transitions for {issue_key}")
+        log_to_excel(wi_id, issue_key, "Transition", "Failed", f"Could not fetch transitions: {r.status_code}")
         return
 
     transitions = r.json().get("transitions", [])
@@ -2234,32 +1447,33 @@ def jira_transition_issue(issue_key: str, ado_state: str):
 
     if not transition_id:
         log(f"⚠️ No transition found from current status to '{target_status}' for {issue_key}")
+        log_to_excel(wi_id, issue_key, "Transition", "Failed", f"No transition to {target_status}")
         return
 
-    # Perform the transition
     url = f"{base}/rest/api/3/issue/{issue_key}/transitions"
     payload = {"transition": {"id": transition_id}}
-    r = requests.post(url, auth=jira_auth(), headers={"Content-Type": "application/json"}, json=payload)
+    r = api_request("post", url, wi_id=wi_id, issue_key=issue_key,
+                    step=f"Transition to {target_status}",
+                    auth=jira_auth(), headers={"Content-Type": "application/json"}, json=payload)
     if r.status_code in (200, 204):
         log(f"✅ {issue_key} transitioned to '{target_status}'")
+        log_to_excel(wi_id, issue_key, "Transition", "Success", f"ADO: {ado_state} → Jira: {target_status}")
     else:
         log(f"⚠️ Failed to transition {issue_key} -> {target_status}: {r.status_code} {r.text}")
+        log_to_excel(wi_id, issue_key, "Transition", "Failed", f"HTTP {r.status_code}")
 
-def download_images_to_ado_attachments(url):
+
+def download_images_to_ado_attachments(url, wi_id=None, issue_key=None):
     parsed = urlparse(url)
     query = parse_qs(parsed.query)
-
-    # Get filename from query string or fallback
     if "fileName" in query:
         filename = query["fileName"][0]
     else:
         filename = os.path.basename(parsed.path)
-
     output_file = os.path.join(OUTPUT_DIR, filename)
-
-    # Always call the API (outside if/else)
-    response = requests.get(url, auth=HTTPBasicAuth("", ADO_PAT), stream=True)
-
+    response = api_request("get", url, wi_id=wi_id, issue_key=issue_key,
+                            step=f"Download Image ({filename})",
+                            auth=HTTPBasicAuth("", ADO_PAT), stream=True)
     if response.status_code == 200:
         with open(output_file, "wb") as f:
             for chunk in response.iter_content(1024):
@@ -2268,172 +1482,169 @@ def download_images_to_ado_attachments(url):
         return output_file
     else:
         print(f"❌ Failed: {response.status_code} - {response.text}")
+        return None
 
-def jira_add_comment_for_link(issue_key: str, body: str):
+
+def jira_add_comment_for_link(issue_key: str, body: str, wi_id=None):
     url = f"{JIRA_URL}/rest/api/2/issue/{issue_key}/comment"
-    headers = {
-        "Accept": "application/json",
-        "Content-Type": "application/json"
-    }
-    auth = HTTPBasicAuth(JIRA_EMAIL, JIRA_API_TOKEN)
-
-    payload = {
-        "body": body
-    }
-
-    response = requests.post(url, headers=headers, auth=auth, json=payload)
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    response = api_request("post", url, wi_id=wi_id, issue_key=issue_key,
+                           step="Add Comment (link)",
+                           headers=headers, auth=jira_auth(), json={"body": body})
     if response.status_code == 201:
         print(f"✅ Comment added to {issue_key}")
     else:
         print(f"❌ Failed to add comment: {response.status_code}, {response.text}")
 
-def clean_html_to_jira_format(issue_key: str,html_text: str) -> str:
+
+def clean_html_to_jira_format(issue_key: str, html_text: str, wi_id=None) -> str:
     if not html_text:
         return ""
     image_urls = re.findall(r'<img[^>]+src="([^"]+)"', html_text)
-
-    # Decode HTML entities
     html_text = html.unescape(html_text)
-
-    # Handle <br> tags → convert to newline
     html_text = re.sub(r"(?i)<br\s*/?>", "\n", html_text)
 
-
-    # If <a> tags exist → convert to Jira wiki link format
     if "<a" in html_text.lower():
         soup = BeautifulSoup(html_text, "html.parser")
-
         for a in soup.find_all("a"):
             href = a.get("href", "").strip()
-            text = a.get_text(strip=True) or href  # ✅ Prefer text, fallback to href
+            text = a.get_text(strip=True) or href
             if href:
                 jira_link = f"[{text}|{href}]"
                 a.replace_with(jira_link)
-
-        # Remove any remaining HTML tags
         clean_text = re.sub(r"<[^>]+>", " ", str(soup)).strip()
         if image_urls:
             print("Link with Image")
             for i in image_urls:
-                local_file = download_images_to_ado_attachments(i)
-                content_url=jira_upload_attachment(issue_key, local_file)  
-                jira_upload_attachment_as_comment(issue_key, content_url,clean_text)
+                local_file = download_images_to_ado_attachments(i, wi_id=wi_id, issue_key=issue_key)
+                content_url = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+                jira_upload_attachment_as_comment(issue_key, content_url, clean_text, wi_id=wi_id)
         else:
             print("only Link")
-            jira_add_comment_for_link(issue_key,clean_text)
+            jira_add_comment_for_link(issue_key, clean_text, wi_id=wi_id)
         return " "
-
     else:
-        # No <a> tag → return plain text
         return re.sub(r"<[^>]+>", " ", html_text).strip()
 
+
 def ado_api_to_ui_link(api_url):
-    """
-    Convert ADO work item API URL to the web UI link
-    """
     match = re.search(r'/workItems/(\d+)', api_url)
     if not match:
-        return api_url  # fallback to original if not a work item URL
+        return api_url
     workitem_id = match.group(1)
     ui_url = re.sub(r'_apis/wit/workItems/\d+', f'_workitems/edit/{workitem_id}', api_url)
     return ui_url
 
 def extract_wid(url):
-    """
-    Extract ADO work item ID from API URL
-    """
     match = re.search(r'/workItems/(\d+)', url)
     return match.group(1) if match else None
 
 def fetch_ado_workitem_title(wid):
     url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/workitems/{wid}?api-version=7.1"
-    r = requests.get(url, auth=ado_auth())
+    r = api_request("get", url, step=f"Fetch ADO Title ({wid})", auth=ado_auth())
     r.raise_for_status()
     data = r.json()
     title = data["fields"].get("System.Title", "ADO Work Item")
     wi_type = data["fields"].get("System.WorkItemType", "")
     return title, wi_type
 
-def create_links_from_ado(wi, issue_key):
-    """
-    Create Jira remote links for ADO relations.
-    - Converts API links to UI links
-    - Fetches ADO ID + Title
-    - Adds relationship type (Parent / Child / Affects)
-    - Safe with try/except
-    """
+def create_links_from_ado(wi, issue_key, wi_id=None):
     relations = wi.get("relations", [])
     if not relations:
-        print(f"No relations found for ADO work item → Jira {issue_key}")
+        log_to_excel(wi_id, issue_key, "Create Links", "Skipped", "No relations in ADO work item")
         return
 
     base = clean_base(JIRA_URL)
+    link_success = 0
+    link_fail = 0
 
     for rel in relations:
         try:
             url = rel.get("url")
             rel_type = rel.get("attributes", {}).get("name", "Related")
-
-            # Skip invalid / GitHub artifact links
             if not url or url.startswith("vstfs:///"):
-                print(f"Skipping artifact link for {issue_key}")
                 continue
-
-            # Only handle ADO work item links
             if "_apis/wit/workItems" not in url:
-                print(f"Skipping non-workitem link: {url}")
                 continue
-
-            # Extract ADO Work Item ID
-            wid = extract_wid(url)
-            if not wid:
-                print(f"Could not extract work item ID from {url}")
+            wid_linked = extract_wid(url)
+            if not wid_linked:
                 continue
-
-            # Fetch title from ADO
-            title, _ = fetch_ado_workitem_title(wid)
-
-            # Convert API → UI link
+            title, _ = fetch_ado_workitem_title(wid_linked)
             ado_ui_url = ado_api_to_ui_link(url)
-
-            payload = {
-                "object": {
-                    "url": ado_ui_url,
-                    "title": f"[{rel_type}] {wid} | {title}"
-                }
-            }
-
+            payload = {"object": {"url": ado_ui_url, "title": f"[{rel_type}] {wid_linked} | {title}"}}
             link_url = f"{base}/rest/api/3/issue/{issue_key}/remotelink"
-
-            r = requests.post(
-                link_url,
-                json=payload,
-                auth=jira_auth(),
-                headers={"Content-Type": "application/json"}
-            )
-
+            r = api_request("post", link_url, wi_id=wi_id, issue_key=issue_key,
+                            step=f"Create Remote Link ({rel_type})",
+                            json=payload, auth=jira_auth(), headers={"Content-Type": "application/json"})
             if r.status_code in (200, 201):
-                print(f"✔ Linked [{rel_type}] {wid} | {title} → Jira {issue_key}")
+                link_success += 1
+                log_to_excel(wi_id, issue_key, "Create Link", "Success", f"[{rel_type}] ADO {wid_linked} linked")
             else:
-                print(
-                    f"✖ Failed linking {wid} → Jira {issue_key} | "
-                    f"Status: {r.status_code} | Response: {r.text}"
-                )
-
+                link_fail += 1
+                log_to_excel(wi_id, issue_key, "Create Link", "Failed",
+                             f"HTTP {r.status_code} for ADO {wid_linked}")
         except Exception as e:
-            print(
-                f"❌ Error while processing relation for Jira {issue_key} | "
-                f"URL: {url} | Error: {e}"
-            )
+            log_to_excel(wi_id, issue_key, "Create Link", "Error", str(e)[:100])
+            link_fail += 1
+
+    log_to_excel(wi_id, issue_key, "Create Links Summary", "Complete",
+                 f"{link_success} succeeded, {link_fail} failed")
 
 
-# Global migration log
-# -----------------------------
+# ============================================================
+# EXCEL TRACKING — SINGLE ROW PER WORK ITEM
+# ============================================================
+
+wi_rows: Dict[str, Dict] = {}
+system_log: List[Dict] = []
+_LEAD_COLS = ["ADO_WorkItemID", "Jira_IssueKey", "Overall_Status"]
+
+
+def _ensure_row(wi_id) -> str:
+    key = str(wi_id) if wi_id is not None else "__system__"
+    if key not in wi_rows:
+        wi_rows[key] = {c: "" for c in _LEAD_COLS}
+        wi_rows[key]["ADO_WorkItemID"] = wi_id or ""
+    return key
+
+
+def update_wi_row(wi_id, field: str, status: str, value: str = ""):
+    """Log a field's status into the work-item's single row."""
+    key = _ensure_row(wi_id)
+    safe_field = field.replace(" ", "_").replace("[", "").replace("]", "")
+    wi_rows[key][f"{safe_field}_Status"] = status
+    if value:
+        wi_rows[key][f"{safe_field}_Message"] = str(value)[:300]
+    print(f"  [{wi_id or 'SYS'}] {field} → {status} | {value}")
+
+
+def set_wi_key(wi_id, issue_key: str):
+    key = _ensure_row(wi_id)
+    wi_rows[key]["Jira_IssueKey"] = issue_key
+
+
+def set_wi_overall(wi_id, status: str):
+    key = _ensure_row(wi_id)
+    wi_rows[key]["Overall_Status"] = status
+
+
+def log_system(event: str, status: str, message: str = ""):
+    system_log.append({
+        "Timestamp": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "Event": event, "Status": status, "Message": message
+    })
+    print(f"[SYSTEM] {event} → {status} | {message}")
+
+
+# Keep old migration_log list for backward compat
 migration_log = []
-# Helper to append messages
-# -----------------------------
+
+
 def log_to_excel(wi_id, issue_key, step, status, message):
-    """Append message to migration log."""
+    """
+    Central logging function — routes to per-row tracker AND keeps the old list.
+    All fields for a work item accumulate in a single row in wi_rows.
+    """
     migration_log.append({
         "WorkItemID": wi_id,
         "IssueKey": issue_key or "",
@@ -2443,20 +1654,494 @@ def log_to_excel(wi_id, issue_key, step, status, message):
     })
     print(f"{wi_id} | {issue_key or 'NA'} | {step} | {status} | {message}")
 
+    if wi_id is None:
+        log_system(step, status, message)
+        return
+    if issue_key:
+        set_wi_key(wi_id, issue_key)
+    update_wi_row(wi_id, step, status, message)
+
+
+# ============================================================
+# ADO IDENTITY LOOKUP — resolves GUIDs to display names
+# (from Code 2)
+# ============================================================
+
+_ADO_IDENTITY_CACHE: Dict[str, str] = {}
+_ADO_GUID_RE = re.compile(
+    r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+)
+
+
+def _fetch_ado_identities_batch(guids: List[str]) -> Dict[str, str]:
+    if not guids:
+        return {}
+
+    to_fetch = [g for g in guids if g.lower() not in _ADO_IDENTITY_CACHE]
+    if not to_fetch:
+        return {g.lower(): _ADO_IDENTITY_CACHE[g.lower()]
+                for g in guids if _ADO_IDENTITY_CACHE.get(g.lower())}
+
+    result: Dict[str, str] = {}
+    for batch in [to_fetch[i:i+20] for i in range(0, len(to_fetch), 20)]:
+        ids_param = ",".join(batch)
+        url = (
+            f"https://vssps.dev.azure.com/{ADO_ORG}/_apis/identities"
+            f"?identityIds={ids_param}&api-version=7.1"
+        )
+        try:
+            r = requests.get(url, auth=ado_auth(), timeout=15)
+            if r.status_code == 200:
+                data = r.json()
+                identities = data if isinstance(data, list) else data.get("value", [])
+                for identity in identities:
+                    identity_id = (identity.get("id") or "").lower()
+                    name = (
+                        identity.get("providerDisplayName")
+                        or identity.get("customDisplayName")
+                        or ""
+                    )
+                    if identity_id and name:
+                        _ADO_IDENTITY_CACHE[identity_id] = name
+                        result[identity_id] = name
+                        log(f"   👤 Resolved GUID {identity_id} → {name}")
+            else:
+                log(f"   ⚠️ Identity batch API returned {r.status_code}: {r.text[:120]}")
+        except Exception as e:
+            log(f"   ⚠️ Identity batch fetch failed: {e}")
+
+    for g in to_fetch:
+        if g.lower() not in _ADO_IDENTITY_CACHE:
+            _ADO_IDENTITY_CACHE[g.lower()] = ""
+
+    return result
+
+
+def _fetch_ado_identity_display_name(guid: str) -> str:
+    guid_lower = guid.lower()
+    if guid_lower in _ADO_IDENTITY_CACHE:
+        return _ADO_IDENTITY_CACHE[guid_lower]
+    batch_result = _fetch_ado_identities_batch([guid])
+    return batch_result.get(guid_lower, "")
+
+
+# ============================================================
+# GUID MAP — ADO GUID -> Jira accountId
+# (from Code 2)
+# ============================================================
+
+_ADO_GUID_MAP: Dict[str, str] = {}
+_ADO_GUID_MAP_LOADED = False
+
+
+def _build_ado_guid_to_jira_map() -> Dict[str, str]:
+    result: Dict[str, str] = {}
+    guid_map_file = "ado_guid_map.csv"
+    if os.path.exists(guid_map_file):
+        try:
+            import csv
+            with open(guid_map_file, "r", encoding="utf-8-sig") as fh:
+                first = fh.readline()
+                delim = "\t" if "\t" in first else ","
+                fh.seek(0)
+                name_count = 0
+                acct_count = 0
+                for row_num, row in enumerate(csv.reader(fh, delimiter=delim), 1):
+                    if not row or len(row) < 2:
+                        continue
+                    guid = row[0].strip().lower()
+                    value = row[1].strip()
+                    if row_num == 1 and not _ADO_GUID_RE.match(guid):
+                        continue
+                    if not guid or not value:
+                        continue
+                    if ":" in value:
+                        result[guid] = value
+                        acct_count += 1
+                    else:
+                        _ADO_IDENTITY_CACHE[guid] = value
+                        name_count += 1
+            parts = []
+            if acct_count:
+                parts.append(f"{acct_count} Jira account mappings")
+            if name_count:
+                parts.append(f"{name_count} display name mappings")
+            if parts:
+                print(f"✅ Loaded {' + '.join(parts)} from {guid_map_file}")
+        except Exception as e:
+            print(f"⚠️  Could not load {guid_map_file}: {e}")
+    return result
+
+
+def _get_ado_guid_map() -> Dict[str, str]:
+    global _ADO_GUID_MAP, _ADO_GUID_MAP_LOADED
+    if not _ADO_GUID_MAP_LOADED:
+        _ADO_GUID_MAP = _build_ado_guid_to_jira_map()
+        _ADO_GUID_MAP_LOADED = True
+    return _ADO_GUID_MAP
+
+
+# ============================================================
+# MENTION RESOLUTION HELPERS
+# (from Code 2)
+# ============================================================
+
+_MARKDOWN_MENTION_RE = re.compile(
+    r'@<([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})>'
+)
+
+
+def _build_mention_map_from_comment(comment: Dict) -> Dict[str, str]:
+    guids = [
+        m.get("artifactId", "").strip()
+        for m in (comment.get("mentions") or [])
+        if m.get("artifactType") == "Person" and m.get("artifactId", "").strip()
+    ]
+    if not guids:
+        return {}
+
+    mention_map = _fetch_ado_identities_batch(guids)
+
+    for guid in guids:
+        if not mention_map.get(guid.lower()):
+            log(f"   ⚠️ Could not resolve display name for GUID: {guid}")
+
+    return mention_map
+
+
+def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
+    guid_map = _get_ado_guid_map()
+
+    def replace_mention(m):
+        guid = m.group(1)
+        guid_lower = guid.lower()
+
+        jira_acct = guid_map.get(guid_lower)
+        if jira_acct:
+            return f"[~accountId:{jira_acct}]"
+
+        display_name = mention_map.get(guid_lower, "")
+        if display_name:
+            return f"@{display_name}"
+
+        display_name = _fetch_ado_identity_display_name(guid)
+        if display_name:
+            return f"@{display_name}"
+
+        return "@Unknown"
+
+    return _MARKDOWN_MENTION_RE.sub(replace_mention, text)
+
+
+def _convert_markdown_to_jira_wiki(text: str) -> str:
+    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
+    text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)
+    return text
+
+
+def _resolve_mention(href: str, data_vss_mention: str, display_name: str) -> str:
+    guid_map = _get_ado_guid_map()
+    if data_vss_mention:
+        guids = _ADO_GUID_RE.findall(data_vss_mention)
+        for g in guids:
+            acct = guid_map.get(g.lower())
+            if acct:
+                return f"[~accountId:{acct}]"
+    if href:
+        if href.lower().startswith("mailto:"):
+            email = href[7:].strip().lower()
+            acct = USER_MAP.get(email)
+            if acct:
+                return f"[~accountId:{acct}]"
+        else:
+            guids = _ADO_GUID_RE.findall(href)
+            for g in guids:
+                acct = guid_map.get(g.lower())
+                if acct:
+                    return f"[~accountId:{acct}]"
+    clean_name = display_name or ""
+    clean_name = _ADO_GUID_RE.sub("", clean_name)
+    clean_name = clean_name.lstrip("@<").rstrip(">").strip()
+    if not clean_name:
+        if href and href.lower().startswith("mailto:"):
+            clean_name = href[7:].split("@")[0].strip()
+        if not clean_name:
+            clean_name = "Unknown"
+    return f"@{clean_name}"
+
+
+# ============================================================
+# IMPROVED COMMENT PARSER — handles markdown AND HTML formats
+# (merged from Code 1 + Code 2)
+# ============================================================
+
+def _parse_comment_html(html_text: str) -> List[Dict]:
+    """
+    Parse ADO comment HTML into a list of parts: {"kind": "text"|"image", ...}
+    Handles <a> mention links, regular links, inline images, <br>, block tags.
+    """
+    if not html_text:
+        return []
+    html_text = html.unescape(html_text)
+    html_text = re.sub(r"(?i)<br\s*/?>", "\n", html_text)
+    soup = BeautifulSoup(html_text, "html.parser")
+    parts: List[Dict] = []
+    text_buf: List[str] = []
+
+    def flush_text():
+        combined = "".join(text_buf)
+        combined = re.sub(r" {2,}", " ", combined)
+        combined = re.sub(r"\n{3,}", "\n\n", combined)
+        combined = combined.strip()
+        if combined:
+            parts.append({"kind": "text", "value": combined})
+        text_buf.clear()
+
+    def _is_mention_link(tag) -> bool:
+        if tag.get("data-vss-mention"):
+            return True
+        href = (tag.get("href") or "").strip()
+        if "/_apis/Identities/" in href:
+            return True
+        if "vssps.visualstudio.com" in href:
+            return True
+        label = tag.get_text(strip=True)
+        if href.startswith("mailto:") and label.startswith("@"):
+            return True
+        return False
+
+    def walk(node):
+        if isinstance(node, NavigableString):
+            txt = str(node)
+            if txt:
+                text_buf.append(txt)
+            return
+        if not isinstance(node, BeautifulSoup) and not hasattr(node, 'name'):
+            return
+        name = node.name.lower() if node.name else ""
+        if name == "img":
+            flush_text()
+            src = node.get("src", "").strip()
+            if src:
+                parts.append({"kind": "image", "src": src})
+            return
+        if name == "a":
+            href = (node.get("href") or "").strip()
+            label = node.get_text(strip=True) or href
+            data_vss = node.get("data-vss-mention", "")
+            if _is_mention_link(node):
+                # Resolve mention to @Name or [~accountId:xxx]
+                text_buf.append(_resolve_mention(href, data_vss, label))
+            else:
+                if href:
+                    text_buf.append(f"[{label}|{href}]")
+                else:
+                    text_buf.append(label)
+            return
+        if name == "br":
+            text_buf.append("\n")
+            return
+        is_block = name in {"p", "div", "li", "ul", "ol",
+                             "h1", "h2", "h3", "h4", "h5", "h6",
+                             "blockquote", "table", "tr", "td", "th"}
+        if is_block:
+            flush_text()
+            for child in node.children:
+                walk(child)
+            flush_text()
+            return
+        for child in node.children:
+            walk(child)
+
+    for top in soup.contents:
+        walk(top)
+    flush_text()
+    return parts
+
+
+def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
+    """Parse ADO markdown comment, resolving @mentions and converting to Jira wiki markup."""
+    if not text:
+        return []
+
+    resolved_text = _resolve_markdown_mentions(text, mention_map)
+    resolved_text = _convert_markdown_to_jira_wiki(resolved_text)
+    resolved_text = resolved_text.strip()
+    if resolved_text:
+        return [{"kind": "text", "value": resolved_text}]
+    return []
+
+
+def _post_wiki_comment(issue_key: str, body: str, wi_id=None, comment_index: int = 0):
+    """Post a Jira wiki-markup comment via REST API v2."""
+    comment_url = f"{clean_base(JIRA_URL)}/rest/api/2/issue/{issue_key}/comment"
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    r = api_request("post", comment_url, wi_id=wi_id, issue_key=issue_key,
+                    step=f"Post Comment[{comment_index}]",
+                    auth=jira_auth(), headers=headers, json={"body": body})
+    if r.status_code not in (200, 201):
+        log(f"   ❌ Comment[{comment_index}] post failed: {r.status_code} {r.text[:200]}")
+        log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Failed",
+                     f"HTTP {r.status_code}: {r.text[:80]}")
+
+
+def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None,
+                              comment_index: int = 0, author: str = "Unknown",
+                              created_str: str = ""):
+    """
+    Parse a single ADO comment and post it to Jira.
+
+    Handles ALL combinations and formats:
+      - HTML format: text-only, image-only, text+image(s), images interspersed with text,
+        mention links (@person), regular hyperlinks
+      - Markdown format: @<GUID> mentions resolved via ADO Identity API or ado_guid_map.csv,
+        markdown bold/italic converted to Jira wiki markup
+      - Multiple consecutive images
+      - Empty comments (posts meta-line only)
+
+    Images are downloaded from ADO, uploaded to Jira, then embedded as !url! in wiki markup.
+    """
+    meta_line = f"*Originally commented by {author} on {created_str}*"
+
+    comment_format = comment.get("format", "html").lower()
+    raw_text = comment.get("text", "")
+    rendered_text = comment.get("renderedText", "")
+
+    def _looks_like_html(text: str) -> bool:
+        return bool(re.search(r'<[a-zA-Z][^>]*>', text or ""))
+
+    # ---- Determine format and parse accordingly ----
+    if comment_format == "markdown":
+        if not raw_text or not raw_text.strip():
+            _post_wiki_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
+            log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success",
+                         "Meta-only (empty markdown body)")
+            return
+
+        log(f"   🔍 Resolving mentions for comment {comment_index}...")
+        mention_map = _build_mention_map_from_comment(comment)
+        parts = _parse_comment_markdown(raw_text, mention_map)
+
+    elif comment_format == "html" or _looks_like_html(rendered_text) or _looks_like_html(raw_text):
+        html_content = rendered_text.strip() or raw_text.strip()
+        if not html_content:
+            _post_wiki_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
+            log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success",
+                         "Meta-only (empty HTML body)")
+            return
+        parts = _parse_comment_html(html_content)
+
+    else:
+        # Fallback: treat as plain text / markdown
+        if not raw_text or not raw_text.strip():
+            _post_wiki_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
+            log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success",
+                         "Meta-only (empty body)")
+            return
+
+        log(f"   🔍 Resolving mentions for comment {comment_index}...")
+        mention_map = _build_mention_map_from_comment(comment)
+        parts = _parse_comment_markdown(raw_text, mention_map)
+
+    if not parts:
+        _post_wiki_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
+        log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success",
+                     "Meta-only (no parseable content)")
+        return
+
+    has_images = any(p["kind"] == "image" for p in parts)
+    has_text = any(p["kind"] == "text" for p in parts)
+
+    log(f"   💬 Comment[{comment_index}]: {len(parts)} parts | "
+        f"images={sum(1 for p in parts if p['kind'] == 'image')} | "
+        f"text={has_text}")
+
+    # ---- Case: text only (no images) ----
+    if not has_images:
+        full_text = "\n\n".join(p["value"] for p in parts if p["kind"] == "text").strip()
+        body = f"{meta_line}\n\n{full_text}" if full_text else meta_line
+        _post_wiki_comment(issue_key, body, wi_id=wi_id, comment_index=comment_index)
+        log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success",
+                     f"Text-only ({len(body)} chars)")
+        return
+
+    # ---- Cases with images: upload all images first, then build combined body ----
+    image_url_map: Dict[str, str] = {}  # ADO src -> Jira content URL
+    img_upload_ok = 0
+    img_upload_fail = 0
+
+    for p in parts:
+        if p["kind"] != "image":
+            continue
+        src = p["src"]
+        if src in image_url_map:
+            continue  # already processed
+        filename = parse_qs(urlparse(src).query or "").get("fileName", [f"img_{comment_index}.png"])[0]
+        local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+        if not local_file:
+            img_upload_fail += 1
+            image_url_map[src] = None
+            log(f"   ⚠️ Failed to download image: {src}")
+            continue
+        upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+        if upload_info and upload_info.get("content"):
+            image_url_map[src] = upload_info["content"]
+            img_upload_ok += 1
+        elif upload_info and upload_info.get("id"):
+            base = clean_base(JIRA_URL)
+            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            img_upload_ok += 1
+        else:
+            img_upload_fail += 1
+            image_url_map[src] = None
+            log(f"   ⚠️ Failed to upload image: {filename}")
+
+    # Build combined wiki-markup body, preserving original order of text/image parts
+    body_parts: List[str] = [meta_line]
+    for p in parts:
+        if p["kind"] == "text":
+            txt = p["value"].strip()
+            if txt:
+                body_parts.append(txt)
+        elif p["kind"] == "image":
+            jira_url = image_url_map.get(p["src"])
+            if jira_url:
+                body_parts.append(f"!{jira_url}!")
+            else:
+                body_parts.append("[Image could not be loaded]")
+
+    final_body = "\n\n".join(body_parts).strip()
+
+    # Post single comment with everything combined
+    comment_url = f"{clean_base(JIRA_URL)}/rest/api/2/issue/{issue_key}/comment"
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    r = api_request("post", comment_url, wi_id=wi_id, issue_key=issue_key,
+                    step=f"Post Comment[{comment_index}]",
+                    auth=jira_auth(), headers=headers, json={"body": final_body})
+
+    if r.status_code in (200, 201):
+        log(f"   ✅ Comment[{comment_index}] posted ({img_upload_ok} images OK, {img_upload_fail} failed)")
+        log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success",
+                     f"Posted: {img_upload_ok} images OK, {img_upload_fail} failed")
+    else:
+        log(f"   ❌ Comment[{comment_index}] post failed: {r.status_code} {r.text[:200]}")
+        log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Failed",
+                     f"HTTP {r.status_code}: {r.text[:80]}")
+
 
 def migrate_all():
     ensure_dir(ATTACH_DIR)
 
-    # Load existing mapping for idempotency
     if os.path.exists(MAPPING_FILE):
         with open(MAPPING_FILE, "r") as f:
             mapping = json.load(f)
     else:
         mapping = {}
 
-    # Ascending ID order
     wiql = (
-"SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2025-12-01' AND [System.CreatedDate] <= '2025-12-10'AND [System.WorkItemType] = 'Feature'"    )
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2025-11-01' "
+        "AND [System.CreatedDate] <= '2026-02-21' AND [System.WorkItemType] = 'Feature'"
+    )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
         log("No work items found.")
@@ -2464,23 +2149,16 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    # -------------------------------
-    # 🔹 ADD BATCH CONTROL HERE
-    # -------------------------------
-    SPECIFIC_ID = None  # 👉 Set your Work Item ID here (e.g. 12345) or keep None for batch mode
+    SPECIFIC_ID = None  # Set to None for batch mode
 
     if SPECIFIC_ID:
-        # 🟢 Single work item mode
-        ids = [SPECIFIC_ID]
+        ids = SPECIFIC_ID
         log(f"🎯 Running migration for a single work item: {SPECIFIC_ID}")
     else:
-        # 🟡 Normal batch mode
-        START_INDEX = 0       # change for next run (0, 10000, 20000…)
-        MAX_TO_PROCESS = 10   # how many to migrate this run
-
+        START_INDEX = 0
+        MAX_TO_PROCESS = 1000
         ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
         log(f"📌 Processing {len(ids)} work items (from index {START_INDEX}) in this run.")
-        # -------------------------------
 
     for batch in chunked(ids, WIQL_PAGE_SIZE):
         time.sleep(SLEEP_BETWEEN_CALLS)
@@ -2489,7 +2167,7 @@ def migrate_all():
         log(f"➡️  Processing batch of {len(workitems)}")
 
         for wi in workitems:
-            print(wi,"This is the work Item")
+            print(wi, "This is the work Item")
             wi_id = int(wi.get("id"))
             wi_id_str = str(wi_id)
             log(f"--- ADO #{wi_id_str} ---")
@@ -2501,7 +2179,7 @@ def migrate_all():
             # 1) Create Jira issue
             try:
                 fields = build_jira_fields_from_ado(wi)
-                issue_key = jira_create_issue(fields)
+                issue_key = jira_create_issue(fields, wi_id=wi_id)
                 if issue_key:
                     log_to_excel(wi_id, issue_key, "Create Issue", "Success", f"Issue {issue_key} created successfully")
                 else:
@@ -2511,147 +2189,29 @@ def migrate_all():
                 log_to_excel(wi_id, None, "Create Issue", "Error", str(e)[:100])
                 continue
 
-            # 🔥 CREATE LINKS
+            # 2) CREATE LINKS
             try:
-                create_links_from_ado(wi, issue_key)
-                log_to_excel(wi_id, issue_key, "Create Links", "Success", "Links created from ADO relations")
+                create_links_from_ado(wi, issue_key, wi_id=wi_id)
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Create Links", "Error", str(e)[:100])
-
-            # # 2️⃣ UPDATE REPRO STEPS
-            # repro_steps_html = wi.get("fields", {}).get("Microsoft.VSTS.TCM.ReproSteps", "")
-            # if repro_steps_html:
-            #     try:
-            #         log(f"📎 Processing ReproSteps for {issue_key}")
-            #         log_to_excel(wi_id, issue_key, "ReproSteps", "Processing", "Starting ReproSteps processing")
-                    
-            #         # Download ADO images and upload to Jira
-            #         attachment_map = download_and_upload_reprosteps_images(issue_key, repro_steps_html)
-                    
-            #         if attachment_map:
-            #             log(f"📸 Uploaded {len(attachment_map)} images")
-            #             log_to_excel(wi_id, issue_key, "ReproSteps Images", "Success", f"Uploaded {len(attachment_map)} images")
-            #             time.sleep(2)
-            #         else:
-            #             log_to_excel(wi_id, issue_key, "ReproSteps Images", "Info", "No images to upload")
-                    
-            #         # Verify attachments exist
-            #         verified_map = {}
-            #         for src, att_id in attachment_map.items():
-            #             base = clean_base(JIRA_URL)
-            #             verify_url = f"{base}/rest/api/3/attachment/{att_id}"
-            #             verify_response = requests.get(verify_url, auth=jira_auth())
-            #             if verify_response.status_code == 200:
-            #                 verified_map[src] = att_id
-            #                 log(f"   ✅ Verified attachment: {att_id}")
-            #             else:
-            #                 log(f"   ⚠️ Attachment {att_id} not found, will use external URL")
-            #                 log_to_excel(wi_id, issue_key, "ReproSteps Verify", "Warning", f"Attachment {att_id} not verified")
-                    
-            #         # Convert HTML to ADF with Jira attachment IDs
-            #         jira_repro_adf = convert_ado_reprosteps_to_jira_adf(
-            #             repro_steps_html, 
-            #             verified_map,
-            #             issue_key
-            #         )
-                    
-            #         # Validate ADF has content
-            #         if not jira_repro_adf.get("content"):
-            #             log(f"   ⚠️ ReproSteps conversion resulted in empty content")
-            #             log_to_excel(wi_id, issue_key, "Update ReproSteps", "Warning", "Empty ADF content")
-            #         else:
-            #             # Log the ADF structure for debugging
-            #             content_types = [c.get("type") for c in jira_repro_adf.get("content", [])]
-            #             log(f"📝 ADF contains: {', '.join(content_types)}")
-                        
-            #             adf_preview = json.dumps(jira_repro_adf, indent=2)[:1000]
-            #             log(f"🔍 ADF Preview: {adf_preview}")
-                        
-            #             # Update the custom field
-            #             base = clean_base(JIRA_URL)
-            #             url = f"{base}/rest/api/3/issue/{issue_key}"
-            #             payload = {"fields": {"customfield_12494": jira_repro_adf}}
-            #             headers = {"Content-Type": "application/json"}
-                        
-            #             r = requests.put(url, auth=jira_auth(), headers=headers, json=payload)
-                        
-            #             if r.status_code in (200, 204):
-            #                 log(f"   ✅ Updated ReproSteps for {issue_key}")
-            #                 log_to_excel(wi_id, issue_key, "Update ReproSteps", "Success", 
-            #                         f"Updated with {len(verified_map)} images")
-            #             else:
-            #                 error_msg = r.text
-            #                 log(f"   ⚠️ Failed to update ReproSteps: {r.status_code}")
-            #                 log(f"   Error: {error_msg}")
-                            
-            #                 # Try to extract specific error from Jira response
-            #                 try:
-            #                     error_json = r.json()
-            #                     if "errors" in error_json:
-            #                         log(f"   Jira errors: {error_json['errors']}")
-            #                         log_to_excel(wi_id, issue_key, "Update ReproSteps", "Failed", 
-            #                                 f"Jira errors: {str(error_json['errors'])[:100]}")
-            #                     if "errorMessages" in error_json:
-            #                         log(f"   Error messages: {error_json['errorMessages']}")
-            #                 except:
-            #                     pass
-                            
-            #                 log_to_excel(wi_id, issue_key, "Update ReproSteps", "Failed", 
-            #                         f"HTTP {r.status_code}: {error_msg[:100]}")
-                
-            #     except Exception as e:
-            #         log(f"   ❌ Exception processing ReproSteps: {str(e)}")
-            #         import traceback
-            #         log(f"   Traceback: {traceback.format_exc()}")
-            #         log_to_excel(wi_id, issue_key, "Update ReproSteps", "Error", str(e)[:100])
-            # else:
-            #     log(f"   ℹ️ No ReproSteps content for {issue_key}")
-            #     log_to_excel(wi_id, issue_key, "ReproSteps", "Skipped", "No ReproSteps content in ADO")
-
-            # # 2) UPDATE STEPS FIELD
-            # try:
-            #     url = f"{JIRA_URL}rest/api/3/issue/{issue_key}"
-            #     headers = {"Content-Type": "application/json"}
-                
-            #     # ✅ ADD: Check if steps_payload has content
-            #     if steps_payload and steps_payload.strip() != " ":
-            #         with open("output.txt", "a", encoding="utf-8") as f:
-            #             f.write(f"{steps_payload}\n")
-            #         with open("output1.txt", "a", encoding="utf-8") as f:
-            #             f.write(f"{url}\n{json.dumps(steps_payload, indent=2)}\n\n")
-                    
-            #         r = requests.put(url, auth=jira_auth(), headers=headers, data=steps_payload)
-            #         print(r.status_code, "test123")
-                    
-            #         if r.status_code in (200, 204):
-            #             log(f"✅ Updated Steps for {issue_key} with inline images")
-            #             log_to_excel(wi_id, issue_key, "Update Steps", "Success", "Steps updated successfully")
-            #         else:
-            #             log(f"⚠️ Failed to update steps for {issue_key}: {r.status_code} {r.text}")
-            #             log_to_excel(wi_id, issue_key, "Update Steps", "Failed", f"{r.status_code} {r.text[:100]}")
-            #     else:
-            #         log_to_excel(wi_id, issue_key, "Update Steps", "Skipped", "No steps content in ADO")
-            # except Exception as e:
-            #     log_to_excel(wi_id, issue_key, "Update Steps", "Error", str(e)[:100])
 
             # 3) UPDATE DESCRIPTION FIELD
             try:
                 print("one")
                 raw_desc = wi.get("fields", {}).get("System.Description", "")
                 print(raw_desc, "test")
-                
                 if raw_desc:
                     print("two")
                     log_to_excel(wi_id, issue_key, "Description", "Processing", "Processing description with images")
-                    
-                    desc_adf = process_description_to_adf(issue_key, raw_desc)
+                    desc_adf = process_description_to_adf(issue_key, raw_desc, wi_id=wi_id)
                     base = clean_base(JIRA_URL)
                     url = f"{base}/rest/api/3/issue/{issue_key}"
                     payload = {"fields": {"description": desc_adf}}
                     headers = {"Content-Type": "application/json"}
-                    r = requests.put(url, auth=jira_auth(), headers=headers, json=payload)
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update Description", auth=jira_auth(),
+                                    headers=headers, json=payload)
                     print(r.status_code, "test123")
-                    
                     if r.status_code in (200, 204):
                         log(f"✅ Updated description for {issue_key} with inline images")
                         log_to_excel(wi_id, issue_key, "Update Description", "Success", "Description updated successfully")
@@ -2671,67 +2231,45 @@ def migrate_all():
             with open(MAPPING_FILE, "w") as f:
                 json.dump(mapping, f, indent=2)
 
-            # Transition to mapped status
+            # 4) Transition to mapped status
             try:
                 ado_state = wi.get("fields", {}).get("System.State", "New")
-                jira_transition_issue(issue_key, ado_state)
-                log_to_excel(wi_id, issue_key, "Transition", "Success", f"Transitioned to {STATE_MAP.get(ado_state, 'NA')}")
+                jira_transition_issue(issue_key, ado_state, wi_id=wi_id)
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Transition", "Error", str(e)[:100])
 
-            # 4) ATTACHMENTS MIGRATION
+            # 5) ATTACHMENTS MIGRATION
             try:
                 relations = wi.get("relations", [])
-
-                # Filter to only AttachedFile relations
-                attachments_to_upload = []
-                for rel in relations:
-                    if rel.get("rel") == "AttachedFile":
-                        att_url = rel.get("url")
-                        att_name = rel.get("attributes", {}).get("name", "attachment")
-                        if att_url:
-                            attachments_to_upload.append((att_url, att_name))
-
-                # Only process if attachments exist
+                attachments_to_upload = [
+                    (rel.get("url"), rel.get("attributes", {}).get("name", "attachment"))
+                    for rel in relations
+                    if rel.get("rel") == "AttachedFile" and rel.get("url")
+                ]
                 if attachments_to_upload:
                     log(f"   📎 Processing {len(attachments_to_upload)} attachment(s) for {issue_key}")
                     log_to_excel(wi_id, issue_key, "Attachments", "Processing", f"Found {len(attachments_to_upload)} attachments")
-                    
-                    # Download and upload each attachment
                     for att_url, att_filename in attachments_to_upload:
                         try:
-                            log(f"   Downloading: {att_filename}")
-                            
-                            # Download from ADO
-                            local_path = ado_download_attachment(att_url, att_filename)
-                            
+                            local_path = ado_download_attachment(att_url, att_filename, wi_id=wi_id, issue_key=issue_key)
                             if local_path and os.path.exists(local_path):
-                                # Upload to Jira
-                                upload_result = jira_upload_attachment(issue_key, local_path)
-                                
+                                upload_result = jira_upload_attachment(issue_key, local_path, wi_id=wi_id)
                                 if upload_result and upload_result.get("id"):
                                     log(f"   ✅ Uploaded attachment: {att_filename}")
-                                    log_to_excel(wi_id, issue_key, "Upload Attachment", "Success", 
-                                            f"Uploaded {att_filename}")
+                                    log_to_excel(wi_id, issue_key, "Upload Attachment", "Success", f"Uploaded {att_filename}")
                                 else:
                                     log(f"   ⚠️ Failed to upload: {att_filename}")
-                                    log_to_excel(wi_id, issue_key, "Upload Attachment", "Failed", 
-                                            f"Upload failed for {att_filename}")
-                                
-                                # Clean up local file
+                                    log_to_excel(wi_id, issue_key, "Upload Attachment", "Failed", f"Upload failed for {att_filename}")
                                 try:
                                     os.remove(local_path)
-                                except Exception as e:
-                                    log(f"   ⚠️ Could not delete local file {local_path}: {e}")
+                                except Exception:
+                                    pass
                             else:
                                 log(f"   ⚠️ Download failed for: {att_filename}")
-                                log_to_excel(wi_id, issue_key, "Download Attachment", "Failed", 
-                                        f"Download failed for {att_filename}")
-                                
+                                log_to_excel(wi_id, issue_key, "Download Attachment", "Failed", f"Download failed for {att_filename}")
                         except Exception as e:
                             log(f"   ❌ Error processing attachment {att_filename}: {e}")
                             log_to_excel(wi_id, issue_key, "Process Attachment", "Error", str(e)[:100])
-                    
                     log(f"   ✅ Attachment processing complete for {issue_key}")
                 else:
                     log(f"   ℹ️ No attachments found for {issue_key}")
@@ -2739,72 +2277,49 @@ def migrate_all():
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Attachments", "Error", str(e)[:100])
 
-            # 5) COMMENTS
+            # 6) COMMENTS — improved handler covers all text/image/markdown combinations
             try:
-                downloaded_files = []
                 comments = ado_get_comments(wi_id)
-                
                 if comments:
-                    log_to_excel(wi_id, issue_key, "Comments", "Processing", f"Found {len(comments)} comments")
-                    
-                    for c in reversed(comments):
-                        html_text = c.get("text") or c.get("renderedText") or ""
-
-                        comment_text = c.get("text") or c.get("renderedText") or ""
-                        created_date = c.get("createdDate")
-                        author = (c.get("createdBy") or {}).get("displayName", "Unknown User")
-
-                        # Format the timestamp nicely
+                    log_to_excel(wi_id, issue_key, "Comments_Total", "Info", str(len(comments)))
+                    ok_count = 0
+                    fail_count = 0
+                    for idx, c in enumerate(reversed(comments)):
+                        author = (c.get("createdBy") or {}).get("displayName", "Unknown")
+                        created_date = c.get("createdDate", "")
                         try:
                             dt = datetime.strptime(created_date, "%Y-%m-%dT%H:%M:%S.%fZ")
                             created_str = dt.strftime("%d %b %Y at %H:%M")
                         except Exception:
                             created_str = created_date
 
-                        plain_text = clean_html_to_jira_format(issue_key, html_text)
-                        image_urls = re.findall(r'<img[^>]+src="([^"]+)"', html_text)
+                        log(f"   💬 Processing comment {idx + 1}/{len(comments)} by {author} on {created_str}")
+                        try:
+                            process_comment_and_post(
+                                issue_key, c,
+                                wi_id=wi_id,
+                                comment_index=idx + 1,
+                                author=author,
+                                created_str=created_str
+                            )
+                            ok_count += 1
+                        except Exception as e:
+                            log(f"   ❌ Comment {idx + 1} failed: {e}")
+                            log_to_excel(wi_id, issue_key, f"Comment[{idx + 1}]", "Error", str(e)[:100])
+                            fail_count += 1
 
-                        print(html_text, "htmltext", plain_text, "plain_text", image_urls, "imageurl")
-                        
-                        if plain_text != " ":
-                            if plain_text and not image_urls:
-                                print("case-1")
-                                body = plain_text
-                                jira_add_comment(issue_key, body)
-                                log_to_excel(wi_id, issue_key, "Add Comment", "Success", f"Comment added: {plain_text[:50]}...")
-
-                            # case 2: image only
-                            elif not plain_text and image_urls:
-                                print("case 2")
-                                try:
-                                    for i in image_urls:
-                                        local_file = download_images_to_ado_attachments(i)
-                                        content_url = jira_upload_attachment(issue_key, local_file)
-                                        jira_upload_attachment_as_comment(issue_key, content_url, plain_text)
-                                    log_to_excel(wi_id, issue_key, "Add Comment", "Success", f"{len(image_urls)} image-only comment")
-                                except Exception as e:
-                                    log_to_excel(wi_id, issue_key, "Add Comment", "Error", f"Image comment failed: {str(e)[:100]}")
-                            
-                            # case 3: text + image
-                            else:
-                                print("case 3")
-                                try:
-                                    for i in image_urls:
-                                        local_file = download_images_to_ado_attachments(i)
-                                        content_url = jira_upload_attachment(issue_key, local_file)
-                                        jira_upload_attachment_as_comment(issue_key, content_url, plain_text)
-                                    log_to_excel(wi_id, issue_key, "Add Comment", "Success", f"Comment with text + {len(image_urls)} images")
-                                except Exception as e:
-                                    log_to_excel(wi_id, issue_key, "Add Comment", "Error", f"Text+image comment failed: {str(e)[:100]}")
-                        else:
-                            continue
+                    log_to_excel(wi_id, issue_key, "Comments_Summary", "Complete",
+                                 f"{ok_count} OK, {fail_count} failed of {len(comments)}")
                 else:
-                    log_to_excel(wi_id, issue_key, "Comments", "Skipped", "No comments in ADO")
+                    log_to_excel(wi_id, issue_key, "Comments_Total", "Skipped", "No comments in ADO")
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Comments", "Error", str(e)[:100])
-    
+
+            set_wi_overall(wi_id, "Complete")
+            log(f"✅ Work item ADO #{wi_id_str} → {issue_key} migration complete")
+
     log("🎉 Migration completed.")
-    
+
     # Cleanup
     try:
         for file in os.listdir("ado_attachments"):
@@ -2815,11 +2330,45 @@ def migrate_all():
     except Exception as e:
         print(f"Failed to cleanup attachments directory: {e}")
 
-    if migration_log:
-        df = pd.DataFrame(migration_log)
-        df.to_excel("migration_log.xlsx", index=False)
-        print("✅ Migration log saved to migration_log.xlsx")
-        
+    # ============================================================
+    # SAVE EXCEL — one row per work item
+    # Each work item's field statuses are all in a single row.
+    # ============================================================
+    try:
+        if wi_rows:
+            all_cols: List[str] = list(_LEAD_COLS)
+            for row in wi_rows.values():
+                for col in row:
+                    if col not in all_cols:
+                        all_cols.append(col)
+
+            rows_data = []
+            for row in wi_rows.values():
+                if row.get("ADO_WorkItemID") in (None, "", "__system__"):
+                    continue
+                rows_data.append({col: row.get(col, "") for col in all_cols})
+
+            df_main = pd.DataFrame(rows_data, columns=all_cols)
+            df_sys = pd.DataFrame(system_log) if system_log else pd.DataFrame(
+                columns=["Timestamp", "Event", "Status", "Message"])
+
+            with pd.ExcelWriter("migration_log.xlsx", engine="openpyxl") as writer:
+                df_main.to_excel(writer, sheet_name="WorkItems", index=False)
+                df_sys.to_excel(writer, sheet_name="SystemLog", index=False)
+                # Auto-size columns
+                ws = writer.sheets["WorkItems"]
+                for col_cells in ws.columns:
+                    max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
+                    ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
+
+            print("✅ Migration log saved to migration_log.xlsx (one row per work item)")
+        else:
+            print("⚠️ No work item rows to save.")
+    except Exception as e:
+        print(f"❌ Failed to save migration_log.xlsx: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 if __name__ == "__main__":
     migrate_all()
-
