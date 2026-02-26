@@ -1216,7 +1216,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         fields["customfield_11710"] = str(branch_name)
         log_to_excel(wi_id, None, "Branch Name", "Success", branch_name)
     
-    # Environment Found In
+    # Environment(s)
     environment = f.get("Custom.EnvironmentFoundIn")
     if environment:
         parts = [e.strip().strip('"') for e in environment.split(";") if e.strip()]
@@ -1237,6 +1237,12 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if release_val:
         fields["customfield_11712"] = {"value": release_val}
         log_to_excel(wi_id, None, "Release", "Success", release_val)
+
+    # Environment Found In (Single Select)
+    environment = f.get("Custom.EnvironmentFoundIn")
+    if environment:
+        fields["customfield_11715"] = {"value": environment.strip()}
+        log_to_excel(wi_id, None, "Environment", "Success", environment)
     
     # Found In Build
     found_in_build = f.get("Microsoft.VSTS.Build.FoundIn")
