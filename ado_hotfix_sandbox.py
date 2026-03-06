@@ -192,6 +192,7 @@ def clean_html_to_text(s: str) -> str:
     if not s:
         return ""
     s = html.unescape(s)
+    s = s.replace("\xa0", " ")
     s = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", s)
     s = re.sub(r"(?i)</\s*p\s*>", "\n\n", s)
     s = re.sub(r"(?i)<\s*p\s*>", "", s)
@@ -1029,7 +1030,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         parts = re.split(r"[;,]", tags)
         labels = [p.strip().replace(" ", "-") for p in parts if p.strip()]
         log_to_excel(wi_id, None, "Tags", "Success", f"Found {len(labels)} labels")
-    
+
     assignee_email = None
     assigned_to = f.get("System.AssignedTo")
     if isinstance(assigned_to, dict):
@@ -1106,6 +1107,24 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Reporter", "Success", f"Default reporter used")
         except Exception as e:
             log_to_excel(wi_id, None, "Reporter", "Failed", str(e)[:100])
+
+    # Priority
+    ado_priority_val = f.get("Microsoft.VSTS.Common.Priority")
+    try:
+        ado_priority_int = int(ado_priority_val) if ado_priority_val is not None else None
+    except Exception:
+        ado_priority_int = None
+
+    jira_priority_name = PRIORITY_MAP.get(ado_priority_int or -1)
+
+    if jira_priority_name:
+        try:
+            fields["priority"] = {"name": jira_priority_name}
+            log_to_excel(wi_id, None, "Priority", "Success", f"ADO: {ado_priority_int} → Jira: {jira_priority_name}")
+        except Exception as e:
+            log_to_excel(wi_id, None, "Priority", "Error", str(e)[:100])
+    else:
+        log_to_excel(wi_id, None, "Priority", "Skipped", "No priority mapping")
     
     # Customer Name
     customer_name = f.get("Custom.CustomerName")
@@ -1158,6 +1177,12 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
         except Exception as e:
             log_to_excel(wi_id, None, "Application", "Failed", str(e)[:100])
+
+    # Release
+    release_val = f.get("Custom.Release")
+    if release_val:
+        fields["customfield_11712"] = {"value": release_val}
+        log_to_excel(wi_id, None, "Release", "Success", release_val)
 
     # Dev ETA
     dev_eta = f.get("Custom.DevETA")
@@ -1245,6 +1270,12 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
         fields["customfield_11600"] = f"{ado_base}/_workitems/edit/{wid}"
         log_to_excel(wi_id, None, "ADO Link", "Success", f"WI: {wid}")
+
+    # Area Path (select-list)
+    area_path = f.get("System.AreaPath")
+    if area_path:
+        fields["customfield_12910"] = {"value": area_path}
+        log_to_excel(wi_id, None, "Area Path", "Success", area_path)
     
     # Area Path
     area = f.get("System.AreaPath")
@@ -1769,8 +1800,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2025-11-01' "
-        "AND [System.CreatedDate] <= '2026-02-21' AND [System.WorkItemType] = 'Hotfix'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-02-21' "
+        "AND [System.CreatedDate] <= '2026-02-28' AND [System.WorkItemType] = 'Hotfix'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
@@ -1779,7 +1810,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = None
+    SPECIFIC_ID = ["877955"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
