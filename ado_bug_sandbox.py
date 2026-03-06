@@ -213,6 +213,7 @@ def clean_html_to_text(s: str) -> str:
     if not s:
         return ""
     s = html.unescape(s)
+    s = s.replace("\xa0", " ")
     s = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", s)
     s = re.sub(r"(?i)</\s*p\s*>", "\n\n", s)
     s = re.sub(r"(?i)<\s*p\s*>", "", s)
@@ -1283,6 +1284,151 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Reporter", "Success", f"Default reporter used")
         except Exception as e:
             log_to_excel(wi_id, None, "Reporter", "Failed", str(e)[:100])
+
+    # Bug Failure Analysis
+    bug_failure_val = f.get("Custom.BugFailureAnalysis")
+    if bug_failure_val:
+        fields["customfield_12820"] = {"value": bug_failure_val}
+        log_to_excel(wi_id, None, "Bug Failure Analysis", "Success", bug_failure_val)
+
+    # Bug User Analysis Subcategory
+    bug_user_analysis_subcat = f.get("Custom.BugUserAnalysisSubcategory")
+    if bug_user_analysis_subcat:
+        fields["customfield_12821"] = {"value": bug_user_analysis_subcat}
+        log_to_excel(wi_id, None, "Bug User Analysis Subcategory", "Success", bug_user_analysis_subcat)
+    
+    # QA Bug User Analysis Subcategory
+    qa_bug_user_analysis_subcat = f.get("Custom.QABugUserAnalysisSubcategory")
+    if qa_bug_user_analysis_subcat:
+        fields["customfield_12822"] = {"value": qa_bug_user_analysis_subcat}
+        log_to_excel(wi_id, None, "QA Bug User Analysis Subcategory", "Success", qa_bug_user_analysis_subcat)
+    
+    # Related User Story where Defect was Introduced
+    related_user_story = f.get("Custom.RelatedUserStorywhereDefectwasIntroduced")
+    if related_user_story:
+        fields["customfield_12823"] = {"value": related_user_story}
+        log_to_excel(wi_id, None, "Related User Story where Defect was Introduced", "Success", related_user_story)
+
+    # Team the bug is associated with
+    team_bug_assoc = f.get("Custom.Teamthebugisassociatedwith")
+    if team_bug_assoc:
+        fields["customfield_12824"] = {"value": team_bug_assoc}
+        log_to_excel(wi_id, None, "Team the bug is associated with", "Success", team_bug_assoc)
+
+    # Developer who Introduced Defect
+    developer_defect = f.get("Custom.DeveloperwhoIntroducedDefect")
+    if developer_defect:
+        fields["customfield_12825"] = str(developer_defect)
+        log_to_excel(wi_id, None, "Developer who Introduced Defect", "Success", developer_defect)
+
+    # QA who originally tested introduced Defect
+    qa_original_tester = f.get("Custom.QAwhooriginallytestedintroducedDefect")
+    if qa_original_tester:
+        qa_email = None
+
+        if isinstance(qa_original_tester, dict):
+            qa_email = qa_original_tester.get("uniqueName") or qa_original_tester.get("mail")
+
+        elif isinstance(qa_original_tester, str):
+            qa_email = qa_original_tester
+
+        if qa_email:
+            qa_account_id = get_jira_account_id_for_email(qa_email)
+
+            if qa_account_id:
+                fields["customfield_12826"] = {"id": qa_account_id}
+                log_to_excel(wi_id, None, "QA who originally tested introduced Defect", "Success", qa_email)
+            else:
+                log_to_excel(wi_id, None, "QA who originally tested introduced Defect", "Warning", f"No mapping for: {qa_email}")
+
+    # Release where Bug was introduced
+    release_bug_intro = f.get("Custom.ReleasewhereBugwasintroduced")
+    if release_bug_intro:
+        fields["customfield_12859"] = {"value": release_bug_intro}
+        log_to_excel(wi_id, None, "Release where Bug was introduced", "Success", release_bug_intro)
+
+    # What type of defect is it
+    defect_type = f.get("Custom.Whattypeofdefectisit")
+    if defect_type:
+        fields["customfield_12860"] = {"value": defect_type}
+        log_to_excel(wi_id, None, "What type of defect is it", "Success", defect_type)
+
+    # Is this Defect related to a testing issue
+    testing_issue = f.get("Custom.IsthisDefectrelatedtoatestingissue")
+    if testing_issue:
+        fields["customfield_12861"] = {"value": testing_issue}
+        log_to_excel(wi_id, None, "Is this Defect related to a testing issue", "Success", testing_issue)
+
+    # QA Bug User Analysis Subcategory
+    qa_bug_user_analysis = f.get("Custom.QABugUserAnalysisSubcategory")
+    if qa_bug_user_analysis:
+        fields["customfield_12862"] = {"value": qa_bug_user_analysis}
+        log_to_excel(wi_id, None, "QA Bug User Analysis Subcategory", "Success", qa_bug_user_analysis)
+
+    # Impacted or Affected Application by the Bug
+    impacted_app = f.get("Custom.ImpactedorAffectedApplicationbytheBug")
+    if impacted_app:
+        fields["customfield_12863"] = {"value": impacted_app}
+        log_to_excel(wi_id, None, "Impacted or Affected Application by the Bug", "Success", impacted_app)
+
+    # QA who introduced defect
+    qa_introduced_defect = f.get("Custom.QAwhointroduceddefect")
+    if qa_introduced_defect:
+        qa_email = None
+
+        if isinstance(qa_introduced_defect, dict):
+            qa_email = qa_introduced_defect.get("uniqueName") or qa_introduced_defect.get("mail")
+
+        elif isinstance(qa_introduced_defect, str):
+            qa_email = qa_introduced_defect
+
+        if qa_email:
+            qa_account_id = get_jira_account_id_for_email(qa_email)
+
+            if qa_account_id:
+                fields["customfield_12864"] = {"id": qa_account_id}
+                log_to_excel(wi_id, None, "QA who introduced defect", "Success", qa_email)
+            else:
+                log_to_excel(wi_id, None, "QA who introduced defect", "Warning", f"No mapping for: {qa_email}")
+
+    # CYPRESS
+    cypress_val = f.get("Custom.CYPRESS")
+    if cypress_val:
+        fields["customfield_12865"] = {"value": cypress_val}
+        log_to_excel(wi_id, None, "CYPRESS", "Success", cypress_val)
+
+    # Trend Notes
+    trend_notes = f.get("Custom.TrendNotes")
+    if trend_notes:
+        fields["customfield_12866"] = {"value": trend_notes}
+        log_to_excel(wi_id, None, "Trend Notes", "Success", trend_notes)
+
+    # CTMS
+    ctms_val = f.get("Custom.CTMS")
+    if ctms_val:
+        fields["customfield_12867"] = {"value": ctms_val}
+        log_to_excel(wi_id, None, "CTMS", "Success", ctms_val)
+
+    # QA Comment
+    qa_comment = f.get("Custom.QAComment")
+    if qa_comment:
+        clean_html_val = clean_html_to_text(qa_comment)
+        fields["customfield_12868"] = to_adf_doc(clean_html_val)
+        log_to_excel(wi_id, None, "QA Comment", "Success", f"Length: {len(clean_html_val)}")
+
+    # CTMS Comment
+    ctms_comment = f.get("Custom.CTMSComment")
+    if ctms_comment:
+        clean_html_val = clean_html_to_text(ctms_comment)
+        fields["customfield_12869"] = to_adf_doc(clean_html_val)
+        log_to_excel(wi_id, None, "CTMS Comment", "Success", f"Length: {len(clean_html_val)}")
+
+    # Trend Notes Comment
+    trend_notes_comment = f.get("Custom.TrendNotesComment")
+    if trend_notes_comment:
+        clean_html_val = clean_html_to_text(trend_notes_comment)
+        fields["customfield_12870"] = to_adf_doc(clean_html_val)
+        log_to_excel(wi_id, None, "Trend Notes Comment", "Success", f"Length: {len(clean_html_val)}")
     
     # Implementation Date
     implementation_date_val = f.get("Custom.ImplementationDate")
@@ -1323,6 +1469,120 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         clean_html_val = clean_html_to_text(corrective_action_plan)
         fields["customfield_11757"] = to_adf_doc(clean_html_val)
         log_to_excel(wi_id, None, "Corrective Action Plan", "Success", f"Length: {len(clean_html_val)}")
+
+    # Risk Rank
+    risk_rank_val = f.get("Custom.RiskRank")
+    if risk_rank_val:
+        fields["customfield_12876"] = {"value": risk_rank_val}
+        log_to_excel(wi_id, None, "Risk Rank", "Success", risk_rank_val)
+
+    # Team Lead
+    team_lead = f.get("Custom.TeamLead")
+    if team_lead:
+        team_lead_email = None
+        if isinstance(team_lead, dict):
+            team_lead_email = team_lead.get("uniqueName") or team_lead.get("mail")
+        elif isinstance(team_lead, str):
+            team_lead_email = team_lead
+        if team_lead_email:
+            team_lead_account_id = get_jira_account_id_for_email(team_lead_email)
+            if team_lead_account_id:
+                fields["customfield_12712"] = {"id": team_lead_account_id}
+                log_to_excel(wi_id, None, "Team Lead", "Success", team_lead_email)
+            else:
+                log_to_excel(wi_id, None, "Team Lead", "Failed", f"No mapping for: {team_lead_email}")
+    
+    # Risk Status
+    risk_status_val = f.get("Custom.RiskStatus")
+    if risk_status_val:
+        fields["customfield_12877"] = {"value": risk_status_val}
+        log_to_excel(wi_id, None, "Risk Status", "Success", risk_status_val)
+
+    # Origin Ticket ID
+    origin_ticket_id = f.get("Custom.OriginTicketID")
+    if origin_ticket_id:
+        fields["customfield_12871"] = str(origin_ticket_id)
+        log_to_excel(wi_id, None, "Origin Ticket ID", "Success", origin_ticket_id)
+
+    # Date Reported
+    date_reported = f.get("Custom.DateReported")
+    if date_reported:
+        try:
+            fields["customfield_12872"] = convert_ado_datetime(date_reported)
+            log_to_excel(wi_id, None, "Date Reported", "Success", f"Date: {date_reported[:10]}")
+        except Exception as e:
+            log_to_excel(wi_id, None, "Date Reported", "Failed", str(e)[:100])
+
+    # Origin Ticket Assigned To
+    origin_ticket_assigned = f.get("Custom.OriginTicketAssignedTo")
+    if origin_ticket_assigned:
+        origin_email = None
+
+        if isinstance(origin_ticket_assigned, dict):
+            origin_email = origin_ticket_assigned.get("uniqueName") or origin_ticket_assigned.get("mail")
+        elif isinstance(origin_ticket_assigned, str):
+            origin_email = origin_ticket_assigned
+
+        if origin_email:
+            origin_account_id = get_jira_account_id_for_email(origin_email)
+
+            if origin_account_id:
+                fields["customfield_12873"] = {"id": origin_account_id}
+                log_to_excel(wi_id, None, "Origin Ticket Assigned To", "Success", origin_email)
+            else:
+                log_to_excel(wi_id, None, "Origin Ticket Assigned To", "Failed", f"No mapping for: {origin_email}")
+
+    # Dev ETA
+    dev_eta = f.get("Custom.DevETA")
+    if dev_eta:
+        try:
+            fields["customfield_12709"] = convert_ado_datetime(dev_eta)
+            log_to_excel(wi_id, None, "Dev ETA", "Success", f"Date: {dev_eta[:10]}")
+        except Exception as e:
+            log_to_excel(wi_id, None, "Dev ETA", "Failed", str(e)[:100])   
+
+    # Developer (User Picker)
+    developer = f.get("Custom.Developer")
+    if developer:
+        developer_email = None
+        if isinstance(developer, dict):
+            developer_email = developer.get("uniqueName") or developer.get("mail")
+        elif isinstance(developer, str):
+            developer_email = developer
+        if developer_email:
+            developer_account_id = get_jira_account_id_for_email(developer_email)
+            if developer_account_id:
+                fields["customfield_12717"] = {"id": developer_account_id}
+                log_to_excel(wi_id, None, "Developer", "Success", developer_email)
+            else:
+                log_to_excel(wi_id, None, "Developer", "Failed", f"MISSING MAPPING: {developer_email}")
+
+    # QA Estimate (Number field)
+    qa_estimate = f.get("Custom.QAEstimate")
+
+    if qa_estimate is not None:
+        try:
+            fields["customfield_11967"] = float(qa_estimate)
+            log_to_excel(wi_id, None, "QA Estimate", "Success", qa_estimate)
+        except ValueError as e:
+            log_to_excel(wi_id, None, "QA Estimate", "Failed", str(e)[:100])
+
+    # QA (User Picker)
+    qa = f.get("Custom.QA")
+    if qa:
+        qa_email = None
+        if isinstance(qa, dict):
+            qa_email = qa.get("uniqueName") or qa.get("mail")
+        elif isinstance(qa, str):
+            qa_email = qa
+        if qa_email:
+            qa_account_id = get_jira_account_id_for_email(qa_email)
+            if qa_account_id:
+                fields["customfield_12754"] = {"id": qa_account_id}
+                log_to_excel(wi_id, None, "QA", "Success", qa_email)
+            else:
+                log_to_excel(wi_id, None, "QA", "Failed", f"MISSING MAPPING: {qa_email}")
+
     
     # ADO Work Item Link
     wid = f.get("System.Id")
@@ -1330,6 +1590,12 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
         fields["customfield_11600"] = f"{ado_base}/_workitems/edit/{wid}"
         log_to_excel(wi_id, None, "ADO Link", "Success", f"WI: {wid}")
+
+    # Area Path (select-list)
+    area_path = f.get("System.AreaPath")
+    if area_path:
+        fields["customfield_12910"] = {"value": area_path}
+        log_to_excel(wi_id, None, "Area Path", "Success", area_path)
     
     # Area Path
     area = f.get("System.AreaPath")
@@ -1848,8 +2114,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2025-11-01' "
-        "AND [System.CreatedDate] <= '2026-02-21' AND [System.WorkItemType] = 'Bug'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-02-21' "
+        "AND [System.CreatedDate] <= '2026-02-28' AND [System.WorkItemType] = 'Bug'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
