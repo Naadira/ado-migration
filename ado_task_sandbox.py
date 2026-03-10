@@ -87,6 +87,20 @@ STATE_MAP = {
     "Removed": "Cancelled"
 }
 
+# CODE 1 STATE_MAP (more comprehensive mapping used for Bug migration):
+# STATE_MAP = {
+#     "New": "New",
+#     "Under Investigation": "In Refinement",
+#     "Ready": "Ready",
+#     "In Development": "In Progress",
+#     "Development Complete": "Review",
+#     "In Test": "Testing",
+#     "Test Complete": "Ready to Release",
+#     "Closed": "Done",
+#     "Removed": "Cancelled",
+#     "Waiting for customer": "Waiting for customer"
+# }
+
 USER_MAP_FILE = "ado_jira_user_map.csv"
 
 
@@ -386,6 +400,10 @@ _MARKDOWN_MENTION_RE = re.compile(
 
 
 def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
+    # CODE 1 also calls html.unescape() on the full text before processing mentions,
+    # to handle HTML entities like &quot; -> ", &amp; -> & etc. in markdown comments:
+    # import html as html_lib
+    # text = html_lib.unescape(text)
     guid_map = _get_ado_guid_map()
 
     def replace_mention(m):
@@ -410,6 +428,21 @@ def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
 
 
 def _convert_markdown_to_jira_wiki(text: str) -> str:
+    # CODE 1 has a far more comprehensive markdown-to-Jira-wiki converter that handles:
+    #   - ATX headings: ### Heading -> h3. Heading
+    #   - GFM pipe tables: | col | -> Jira || col ||
+    #   - Unordered lists: * item / - item -> * item  (Jira wiki bullet)
+    #   - Ordered lists: 1. item -> # item
+    #   - Bold+italic combined: ***text*** -> *_text_*
+    #   - Bold: **text** -> *text* (using sentinel placeholders to avoid italic re-consuming)
+    #   - Italic: *text* (single) -> _text_
+    #   - Inline code: `code` -> {{code}}
+    #   - Markdown links: [text](url) -> [text|url]
+    #   - Bare angle-bracket URLs: <https://...> -> [https://...]
+    #   - Cell content stripping of <br> tags in tables
+    # The full implementation uses helper _inline_md_to_jira() for inline transforms
+    # and processes line-by-line to detect block-level structures (tables, headings, lists).
+    # Code 2 only handles bold (**text** -> *text*) and italic (*text* -> _text_).
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
     text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)
     return text
@@ -1276,6 +1309,25 @@ def steps_formatter(xml_data):
     return steps_payload
 
 
+# ============================================================
+# CODE 1 ONLY: fix_relative_urls_in_repro_steps
+# Converts relative URLs like /HESource/... found in ReproSteps HTML
+# to absolute URLs (https://dev.azure.com/HESource/...) before processing.
+# This is called in Code 1's migrate_all() before download_and_upload_reprosteps_images.
+# Code 2 does not use ReproSteps at all for Task migration, so this is not needed here.
+# def fix_relative_urls_in_repro_steps(repro_html: str) -> str:
+#     if not repro_html:
+#         return repro_html
+#     pattern = r'((?:src|href)=")(/HESource/[^"]*)'
+#     def replace_url(match):
+#         attr_part = match.group(1)
+#         relative_url = match.group(2)
+#         absolute_url = f"https://dev.azure.com{relative_url}"
+#         return attr_part + absolute_url
+#     fixed_html = re.sub(pattern, replace_url, repro_html)
+#     return fixed_html
+# ============================================================
+
 def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id=None) -> Dict[str, str]:
     attachment_map = {}
     if not repro_html:
@@ -1546,6 +1598,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     steps_payload = None
     f = wi.get("fields", {})
     wi_id = wi.get("id")
+
+    # CODE 1 also parses TCM Steps (Microsoft.VSTS.TCM.Steps) here for Bug/Test migration:
     # steps = f.get("Microsoft.VSTS.TCM.Steps", " ")
     # if steps:
     #     try:
@@ -1566,7 +1620,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         parts = re.split(r"[;,]", tags)
         labels = [p.strip().replace(" ", "-") for p in parts if p.strip()]
         log_to_excel(wi_id, None, "Tags", "Success", f"Found {len(labels)} labels")
-
 
     assignee_email = None
     assigned_to = f.get("System.AssignedTo")
@@ -1653,7 +1706,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
     # Assertions
     assertions_val = f.get("Custom.Assertions")
-
     if assertions_val is not None:
         try:
             clean_val = str(assertions_val).strip()
@@ -1715,7 +1767,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     product = f.get("Custom.Product")
     if product:
         fields["customfield_11703"] = {"value": product}
-        log_to_excel(wi_id, None, "Product", "Success", product)     
+        log_to_excel(wi_id, None, "Product", "Success", product)
 
     # Regression Claims Executed
     reg_claims_executed = f.get("Custom.RegressionClaimsExecuted")
@@ -1757,7 +1809,59 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Assignee", "Warning", f"No mapping for: {assignee_email}")
         else:
             log_to_excel(wi_id, None, "Assignee", "Skipped", "No assignee in ADO")
-        
+
+    # CODE 1 also maps the following Bug-specific fields not present in Code 2:
+    # - Blocking Type          → customfield_11699  ({"value": blocking_type})
+    # - Bug Severity           → customfield_10090  ({"value": bug_severity})
+    # - Bug Priority (Custom.BugPriority, P1-P4)    → fields["priority"] via BUG_PRIORITY_MAP
+    # - Resolution (Microsoft.VSTS.Common.ResolvedReason) → fields["resolution"] via RESOLUTION_MAP
+    # - Release Notes Status   → customfield_11701  ({"value": ...})
+    # - Value Stream           → customfield_11702  ({"value": ...})
+    # - Bug Area               → customfield_11704  ({"value": ...})
+    # - Bug Type               → customfield_11705  ({"value": ...})
+    # - Found by Automation    → customfield_11706  ({"value": ...})
+    # - Deliverable Type       → customfield_11707  ({"value": ...})
+    # - Risk Opened            → customfield_11708  ({"value": "True"/"False"})
+    # - Branch Name            → customfield_11710  (str)
+    # - Environment Found In   → customfield_12597  ([{"value": ...}]) multi-select
+    # - Environment Found In   → customfield_11715  ({"value": ...}) single-select
+    # - Hotfix Production Date → customfield_12416  (datetime string)
+    # - Release                → customfield_11712  ({"value": ...})
+    # - Found In Build         → customfield_11713  (str)
+    # - Bug Failure Analysis   → customfield_12820  ({"value": ...})
+    # - Bug User Analysis Subcategory → customfield_12821 ({"value": ...})
+    # - QA Bug User Analysis Subcategory → customfield_12822 ({"value": ...})
+    # - Related User Story where Defect was Introduced → customfield_12823 ({"value": ...})
+    # - Team the bug is associated with → customfield_12824 ({"value": ...})
+    # - Developer who Introduced Defect → customfield_12825 (str)
+    # - QA who originally tested introduced Defect → customfield_12826 ({"id": account_id})
+    # - Release where Bug was introduced → customfield_12859 ({"value": ...})
+    # - What type of defect is it → customfield_12860 ({"value": ...})
+    # - Is this Defect related to a testing issue → customfield_12861 ({"value": ...})
+    # - QA Bug User Analysis Subcategory (alt) → customfield_12862 ({"value": ...})
+    # - Impacted or Affected Application by the Bug → customfield_12863 ({"value": ...})
+    # - QA who introduced defect → customfield_12864 ({"id": account_id})
+    # - CYPRESS                → customfield_12865  ({"value": ...})
+    # - Trend Notes            → customfield_12866  ({"value": ...})
+    # - CTMS                   → customfield_12867  ({"value": ...})
+    # - QA Comment             → customfield_12868  (ADF doc)
+    # - CTMS Comment           → customfield_12869  (ADF doc)
+    # - Trend Notes Comment    → customfield_12870  (ADF doc)
+    # - Implementation Date    → customfield_11755  (datetime string)
+    # - Status Dropdown        → customfield_11756  ({"value": ...})
+    # - CAP Author             → customfield_11758  ({"id": account_id})
+    # - Corrective Action Plan → customfield_11757  (ADF doc)
+    # - Risk Rank              → customfield_12876  ({"value": ...})
+    # - Team Lead              → customfield_12712  ({"id": account_id})
+    # - Risk Status            → customfield_12877  ({"value": ...})
+    # - Origin Ticket ID       → customfield_12871  (str)
+    # - Date Reported          → customfield_12872  (datetime string)
+    # - Origin Ticket Assigned To → customfield_12873 ({"id": account_id})
+    # - Dev ETA                → customfield_12709  (datetime string)
+    # - Developer              → customfield_12717  ({"id": account_id})
+    # - QA Estimate            → customfield_11967  (float)
+    # - QA                     → customfield_12754  ({"id": account_id})
+
     # ADO Work Item Link
     wid = f.get("System.Id")
     if wid:
@@ -2026,6 +2130,20 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
 
 
 def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
+    # CODE 1 uses a more robust version of this function called
+    # _parse_comment_markdown_improved() which additionally:
+    #   1. Calls _fix_ado_malformed_markdown_links(text) first to fix ADO broken link patterns:
+    #        - Title-escaped links: [text](url "title") -> [text](url)
+    #        - Angle+paren triple links: <[display>](real_url> "lower_url") -> [url](url)
+    #      (This also internally calls html.unescape() on the full text)
+    #   2. Extracts inline images (![alt](url)) separately as {"kind": "image", "src": url}
+    #      parts, interleaved with text parts in document order.
+    #   3. After building parts, calls _deduplicate_links_in_parts(parts) to remove
+    #      duplicate [text|url] Jira links across all text parts.
+    #   4. Uses the full _convert_markdown_to_jira_wiki() (headings, tables, lists, etc.)
+    #      rather than just bold/italic.
+    # Code 2's _parse_comment_markdown() is a simpler single-pass version
+    # that returns at most one text part and does not handle inline images.
     if not text:
         return []
 
@@ -2041,6 +2159,14 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
                               author: str = "Unknown", created_str: str = ""):
     meta_line = f"*Originally commented by {author} on {created_str}*"
 
+    # CODE 1 uses a dedicated detect_comment_format() function here with more robust logic:
+    #   - Checks if raw_text itself contains block-level HTML tags (div, img, br, p, etc.)
+    #     and routes to the HTML parser even when ADO reports format as "markdown" or "text".
+    #     This prevents raw HTML tags being passed through the markdown pipeline as literal text.
+    #   - Prefers HTML path whenever rendered_text looks like HTML to prevent duplicate links.
+    #   - Returns a tuple (format_type, raw_text, rendered_text) for clear separation.
+    # Code 2 performs inline format detection within process_comment_and_post itself,
+    # which does not check for block-level HTML in raw_text.
     comment_format = comment.get("format", "html").lower()
     raw_text = comment.get("text", "")
     rendered_text = comment.get("renderedText", "")
@@ -2084,6 +2210,8 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     has_images = any(p["kind"] == "image" for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
+    # CODE 1 logs more detail here:
+    # log(f"   💬 Comment[{comment_index}]: {len(parts)} parts | text={has_text} | images={...}")
     log(f"   💬 Comment[{comment_index}]: {len(parts)} parts | images={sum(1 for p in parts if p['kind'] == 'image')} | text={has_text}")
 
     if not has_images:
@@ -2104,7 +2232,11 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
         src = p["src"]
         if src in image_url_map:
             continue
+        # CODE 1 also extracts filename from query params here (same as Code 2):
         filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
+
+        # CODE 1 uses ado_download_attachment() (with retries and logging) instead of
+        # download_images_to_ado_attachments() used here:
         local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
         if not local_file:
             img_fail_count += 1
@@ -2122,6 +2254,16 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
             img_fail_count += 1
             image_url_map[src] = None
 
+        # CODE 1 also deletes the local temp file after upload:
+        # try:
+        #     if os.path.exists(local_file):
+        #         os.remove(local_file)
+        # except Exception:
+        #     pass
+
+    # CODE 1 uses a dedicated build_comment_body_with_images() helper function
+    # that also normalises whitespace (re.sub(r'\n{3,}', '\n\n', txt)) per text part.
+    # Code 2 assembles the body inline here without that extra normalisation.
     body_parts: List[str] = [meta_line]
     for p in parts:
         if p["kind"] == "text":
@@ -2298,7 +2440,10 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = None
+    SPECIFIC_ID = ["879751"]
+
+    # CODE 1 uses SPECIFIC_ID = ["845200"] to run a single targeted work item for debugging.
+    # Code 2 sets SPECIFIC_ID = None to process all matched items.
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2337,6 +2482,27 @@ def migrate_all():
                 create_links_from_ado(wi, issue_key, wi_id=wi_id)
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Create Links", "Error", str(e)[:100])
+
+            # CODE 1 also processes ReproSteps (step 3) and TCM Steps (step 4) here,
+            # which are Bug/TestCase-specific fields not migrated in Code 2 (Task migration):
+            #
+            # Step 3 — ReproSteps (customfield_12494):
+            #   repro_steps_html = wi.get("fields", {}).get("Microsoft.VSTS.TCM.ReproSteps", "")
+            #   repro_steps_html = fix_relative_urls_in_repro_steps(repro_steps_html)
+            #   if repro_steps_html:
+            #       attachment_map = download_and_upload_reprosteps_images(issue_key, repro_steps_html, wi_id)
+            #       if attachment_map: time.sleep(2)
+            #       # Verifies each uploaded attachment via GET /rest/api/3/attachment/{id}
+            #       verified_map = {src: att_id for src, att_id in attachment_map.items()
+            #                       if api_request("get", f"{base}/rest/api/3/attachment/{att_id}", ...).status_code == 200}
+            #       jira_repro_adf = convert_ado_reprosteps_to_jira_adf(repro_steps_html, verified_map, issue_key)
+            #       if jira_repro_adf.get("content"):
+            #           api_request("put", .../issue/{issue_key}, json={"fields": {"customfield_12494": jira_repro_adf}})
+            #
+            # Step 4 — TCM Steps (customfield_10632):
+            #   url = f"{JIRA_URL}rest/api/3/issue/{issue_key}"
+            #   if steps_payload and steps_payload.strip() != " ":
+            #       api_request("put", url, data=steps_payload)
 
             # 5) Description — NOW USES improved_process_description_to_adf FOR TABLE SUPPORT
             try:
