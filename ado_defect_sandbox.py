@@ -16,6 +16,7 @@ from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
 from requests.auth import HTTPBasicAuth
 from bs4 import BeautifulSoup
 from bs4 import NavigableString
+from bs4 import NavigableString, Tag
 from typing import Dict, List, Tuple, Set
 
 load_dotenv()
@@ -197,6 +198,7 @@ def clean_html_to_text(s: str) -> str:
     if not s:
         return ""
     s = html.unescape(s)
+    s = s.replace("\xa0", " ")
     s = re.sub(r"(?i)<\s*br\s*/?\s*>", "\n", s)
     s = re.sub(r"(?i)</\s*p\s*>", "\n\n", s)
     s = re.sub(r"(?i)<\s*p\s*>", "", s)
@@ -553,6 +555,151 @@ def jira_add_comment(issue_key: str, text: str, wi_id=None):
 URL_PATTERN = re.compile(r'(https?://\S+)')
 
 
+# ============================================================================
+# INTEGRATED TABLE CONVERSION FUNCTIONS (from Code 1)
+# ============================================================================
+
+def _extract_cell_content(cell: Tag) -> List[Dict]:
+    """
+    Extract content from a table cell and return as ADF paragraph content.
+    Handles: text, links, bold, italic, line breaks, etc.
+    """
+    content = []
+
+    def process_node(node):
+        if isinstance(node, NavigableString):
+            text = str(node).strip()
+            if text:
+                content.append({"type": "text", "text": text})
+            return
+
+        if not isinstance(node, Tag):
+            return
+
+        name = node.name.lower() if node.name else None
+
+        if name == "br":
+            content.append({"type": "hardBreak"})
+        elif name in ["b", "strong"]:
+            text = node.get_text(strip=True)
+            if text:
+                content.append({
+                    "type": "text",
+                    "text": text,
+                    "marks": [{"type": "strong"}]
+                })
+        elif name in ["i", "em"]:
+            text = node.get_text(strip=True)
+            if text:
+                content.append({
+                    "type": "text",
+                    "text": text,
+                    "marks": [{"type": "em"}]
+                })
+        elif name == "a":
+            href = node.get("href", "").strip()
+            text = node.get_text(strip=True) or href
+            if href and text:
+                content.append({
+                    "type": "text",
+                    "text": text,
+                    "marks": [{"type": "link", "attrs": {"href": href}}]
+                })
+            elif text:
+                content.append({"type": "text", "text": text})
+        elif name == "p":
+            for child in node.children:
+                process_node(child)
+        elif name == "div":
+            for child in node.children:
+                process_node(child)
+        elif name == "span":
+            for child in node.children:
+                process_node(child)
+        else:
+            for child in node.children:
+                process_node(child)
+
+    for child in cell.children:
+        process_node(child)
+
+    if not content:
+        text = cell.get_text(strip=True)
+        if text:
+            content.append({"type": "text", "text": text})
+
+    return content if content else [{"type": "text", "text": ""}]
+
+
+def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=None) -> dict:
+    """
+    Enhanced version that properly handles HTML tables in descriptions.
+    Preserves table structure, rows, columns, and all formatting.
+    Falls back to normal processing for non-table content.
+    """
+    if not raw_html or not raw_html.strip():
+        return {"type": "doc", "version": 1, "content": []}
+
+    soup = BeautifulSoup(raw_html, "html.parser")
+    tables = soup.find_all("table")
+
+    if not tables:
+        # No tables - use original processing
+        return process_description_to_adf(issue_key, raw_html, wi_id=wi_id)
+
+    # Process with table support
+    adf_content = []
+
+    for table_elem in tables:
+        table_rows = []
+
+        for tr in table_elem.find_all("tr"):
+            row_cells = []
+            is_header = bool(tr.find("th"))
+
+            for td in tr.find_all(["td", "th"]):
+                cell_type = "header" if td.name == "th" or is_header else "data"
+                cell_content = _extract_cell_content(td)
+
+                table_cell = {
+                    "type": "tableHeader" if cell_type == "header" else "tableCell",
+                    "content": [{
+                        "type": "paragraph",
+                        "content": cell_content
+                    }]
+                }
+                row_cells.append(table_cell)
+
+            if row_cells:
+                table_rows.append({
+                    "type": "tableRow",
+                    "content": row_cells
+                })
+
+        if table_rows:
+            adf_content.append({
+                "type": "table",
+                "attrs": {
+                    "isNumberColumnEnabled": False,
+                    "layout": "default"
+                },
+                "content": table_rows
+            })
+
+    if not adf_content:
+        adf_content = [{"type": "paragraph", "content": []}]
+
+    return {
+        "type": "doc",
+        "version": 1,
+        "content": adf_content
+    }
+
+# ============================================================================
+# END OF TABLE CONVERSION FUNCTIONS
+# ============================================================================
+
+
 def process_description_to_adf(issue_key: str, raw_html: str, wi_id=None) -> dict:
     if not raw_html:
         return {"type": "doc", "version": 1, "content": []}
@@ -737,6 +884,26 @@ def steps_formatter(xml_data):
     steps_payload = json.dumps(jira_payload, indent=2)
     return steps_payload
 
+# ============================================================
+# FIX RELATIVE URLS IN REPRO STEPS
+# ============================================================
+
+def fix_relative_urls_in_repro_steps(repro_html: str) -> str:
+    """Convert relative URLs to absolute URLs in ReproSteps HTML"""
+    
+    if not repro_html:
+        return repro_html
+    
+    pattern = r'((?:src|href)=")(/HESource/[^"]*)'
+    
+    def replace_url(match):
+        attr_part = match.group(1)
+        relative_url = match.group(2)
+        absolute_url = f"https://dev.azure.com{relative_url}"
+        return attr_part + absolute_url
+    
+    fixed_html = re.sub(pattern, replace_url, repro_html)
+    return fixed_html
 
 def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id=None) -> Dict[str, str]:
     attachment_map = {}
@@ -767,7 +934,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
     """
     if not html_input:
         return {"type": "doc", "version": 1, "content": []}
-    
+
     soup = BeautifulSoup(html_input, "html.parser")
     attachment_map = attachment_map or {}
     doc_content: List = []
@@ -796,7 +963,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
     def inline_nodes_from(element) -> List:
         """Extract inline ADF nodes from an element."""
         nodes = []
-        
+
         for child in element.children:
             if isinstance(child, NavigableString):
                 text = html.unescape(str(child))
@@ -805,7 +972,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                     nodes.append({"type": "text", "text": text})
             elif isinstance(child, NavigableString.__class__.__bases__[0]):
                 name = (child.name or "").lower() if hasattr(child, 'name') else ""
-                
+
                 if name in ("b", "strong"):
                     text = child.get_text()
                     if text.strip():
@@ -814,7 +981,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                             "text": text,
                             "marks": [{"type": "strong"}]
                         })
-                
+
                 elif name in ("i", "em"):
                     text = child.get_text()
                     if text.strip():
@@ -823,7 +990,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                             "text": text,
                             "marks": [{"type": "em"}]
                         })
-                
+
                 elif name == "code":
                     text = child.get_text()
                     if text.strip():
@@ -832,7 +999,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                             "text": text,
                             "marks": [{"type": "code"}]
                         })
-                
+
                 elif name == "a":
                     href = (child.get("href") or "").strip()
                     label = child.get_text(strip=True) or href
@@ -844,19 +1011,19 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                         })
                     elif label:
                         nodes.append({"type": "text", "text": label})
-                
+
                 elif name == "br":
                     nodes.append({"type": "hardBreak"})
-                
+
                 elif name == "span":
                     nodes.extend(inline_nodes_from(child))
-                
+
                 elif name == "img":
                     pass
-                
+
                 else:
                     nodes.extend(inline_nodes_from(child))
-        
+
         return nodes
 
     def walk(node):
@@ -869,7 +1036,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                     "content": [{"type": "text", "text": text}]
                 })
             return
-        
+
         if not hasattr(node, 'name'):
             return
 
@@ -890,7 +1057,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                         "type": "listItem",
                         "content": [{"type": "paragraph", "content": inline}]
                     })
-            
+
             if items:
                 doc_content.append({
                     "type": "bulletList",
@@ -907,7 +1074,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                         "type": "listItem",
                         "content": [{"type": "paragraph", "content": inline}]
                     })
-            
+
             if items:
                 doc_content.append({
                     "type": "orderedList",
@@ -938,19 +1105,19 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                             cell_blocks.append(make_media_node(src))
                         if hasattr(img, 'decompose'):
                             img.decompose()
-                    
+
                     inline = inline_nodes_from(td)
                     if inline:
                         cell_blocks.append({"type": "paragraph", "content": inline})
                     if not cell_blocks:
                         cell_blocks = [{"type": "paragraph", "content": []}]
-                    
+
                     cell_type = "tableHeader" if td.name == "th" else "tableCell"
                     cells.append({"type": cell_type, "content": cell_blocks})
-                
+
                 if cells:
                     rows.append({"type": "tableRow", "content": cells})
-            
+
             if rows:
                 doc_content.append({
                     "type": "table",
@@ -977,7 +1144,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                     doc_content.append(make_media_node(src))
                 if hasattr(img, 'decompose'):
                     img.decompose()
-            
+
             inline = inline_nodes_from(node)
             if inline:
                 doc_content.append({
@@ -1015,7 +1182,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Steps Parsing", "Success", "Parsed test steps")
         except Exception as e:
             log_to_excel(wi_id, None, "Steps Parsing", "Failed", str(e)[:100])
-    
+
      # ============================================================
     # SUMMARY - Clean newlines FIRST
     # ============================================================
@@ -1027,45 +1194,45 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # STEP 3: Ensure not empty
     if not summary:
         summary = "No Title"
-    
+
     # STEP 4: Track truncation
     full_summary = summary
     summary_was_truncated = False
     max_summary_length = 255
-    
+
     if len(summary) > max_summary_length:
         summary_was_truncated = True
         original_length = len(summary)
         summary = summary[:max_summary_length]
-        log_to_excel(wi_id, None, "Summary Truncation", "Warning", 
+        log_to_excel(wi_id, None, "Summary Truncation", "Warning",
                      f"Truncated from {original_length} to 255 chars. Full text will be in description.")
-    
+
     # STEP 5: Get description
     raw_desc = f.get("System.Description", "")
-    
+
     # STEP 6: Prepend full summary if truncated
     if summary_was_truncated:
         full_summary_text = f"*Full Summary :*\n\n{full_summary}\n\n"
         raw_desc = full_summary_text + (raw_desc or "")
-    
+
     ado_type = f.get("System.WorkItemType", "Task")
     jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
-    
+
     tags = f.get("System.Tags", "")
     labels: List[str] = []
     if tags:
         parts = re.split(r"[;,]", tags)
         labels = [p.strip().replace(" ", "-") for p in parts if p.strip()]
         log_to_excel(wi_id, None, "Tags", "Success", f"Found {len(labels)} labels")
-    
+
     assignee_email = None
     assigned_to = f.get("System.AssignedTo")
     if isinstance(assigned_to, dict):
         assignee_email = assigned_to.get("uniqueName") or assigned_to.get("mail")
-    
+
     ado_state = f.get("System.State", "New")
-    
+
     fields: Dict = {
         "project": {"key": JIRA_PROJECT_KEY},
         "summary": summary,
@@ -1073,7 +1240,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         "description": to_adf_doc(" "),
         "labels": labels,
     }
-    
+
     # Created Date
     created_date = f.get("System.CreatedDate")
     if created_date:
@@ -1082,7 +1249,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Created Date", "Success", f"Date: {created_date[:10]}")
         except Exception as e:
             log_to_excel(wi_id, None, "Created Date", "Failed", str(e)[:100])
-    
+
     # Due Date
     target_date = f.get("Microsoft.VSTS.Scheduling.TargetDate")
     if target_date:
@@ -1107,19 +1274,19 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Priority Rank", "Success", f"Value: {priority_rank}")
         except ValueError as e:
             log_to_excel(wi_id, None, "Priority Rank", "Failed", str(e)[:100])
-    
+
     # Blocking Type
     blocking_type = f.get("Custom.BlockingType")
     if blocking_type:
         fields["customfield_11699"] = {"value": blocking_type}
         log_to_excel(wi_id, None, "Blocking Type", "Success", blocking_type)
-    
+
     # Bug Severity
     bug_severity = f.get("Custom.BugSeverity")
     if bug_severity:
         fields["customfield_10090"] = {"value": bug_severity}
         log_to_excel(wi_id, None, "Bug Severity", "Success", bug_severity)
-    
+
     # Bug Priority
     bug_priority = f.get("Custom.BugPriority")
     if bug_priority:
@@ -1150,7 +1317,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if found_by_automation:
         fields["customfield_11706"] = {"value": found_by_automation}
         log_to_excel(wi_id, None, "Found by Automation", "Success", found_by_automation)
-    
+
     # Resolution
     resolved_reason = f.get("Microsoft.VSTS.Common.ResolvedReason")
     if resolved_reason:
@@ -1166,39 +1333,39 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if release_notes_status:
         fields["customfield_11701"] = {"value": release_notes_status}
         log_to_excel(wi_id, None, "Release Notes Status", "Success", release_notes_status)
-    
+
     # Value Stream
     value_stream = f.get("Custom.ValueStream")
     if value_stream:
         fields["customfield_11702"] = {"value": value_stream}
         log_to_excel(wi_id, None, "Value Stream", "Success", value_stream)
-    
+
     # Customer Name
     customer_name = f.get("Custom.CustomerName")
     if customer_name:
         parts = [c.strip() for c in customer_name.split(";") if c.strip()]
         fields["customfield_12350"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Customer Name", "Success", f"Found {len(parts)} customers")
-    
+
     # Provider Type
     provider_type = f.get("Custom.ProviderType")
     if provider_type:
         parts = [p.strip() for p in provider_type.split(";") if p.strip()]
         fields["customfield_12383"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Provider Type", "Success", f"Found {len(parts)} types")
-    
+
     # Product
     product = f.get("Custom.Product")
     if product:
         fields["customfield_11703"] = {"value": product}
         log_to_excel(wi_id, None, "Product", "Success", product)
-    
+
     # Bug Area
     bug_area = f.get("Custom.BugArea")
     if bug_area:
         fields["customfield_11704"] = {"value": bug_area}
         log_to_excel(wi_id, None, "Bug Area", "Success", bug_area)
-    
+
     # Bug Type
     bug_type = f.get("Custom.BugType")
     if bug_type:
@@ -1210,7 +1377,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if deliverable_type:
         fields["customfield_11707"] = {"value": deliverable_type}
         log_to_excel(wi_id, None, "Deliverable Type", "Success", deliverable_type)
-    
+
     # Risk Opened
     risk_opened = f.get("Custom.RiskOpened")
     if risk_opened is not None:
@@ -1230,7 +1397,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
     # Client Requests RCA (Boolean → Single Select)
     client_requests_rca = f.get("Custom.ClientRequestsRCA")
-
     if client_requests_rca is not None:
         value_str = "True" if client_requests_rca else "False"
         fields["customfield_12669"] = {"value": value_str}
@@ -1265,6 +1431,46 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if issues_log:
         fields["customfield_12705"] = {"value": issues_log}
         log_to_excel(wi_id, None, "IssuesLog", "Success", issues_log)
+
+    # Origin Ticket ID
+    origin_ticket_id = f.get("Custom.OriginTicketID")
+    if origin_ticket_id:
+        fields["customfield_12871"] = str(origin_ticket_id)
+        log_to_excel(wi_id, None, "Origin Ticket ID", "Success", origin_ticket_id)
+
+    # Date Reported
+    date_reported = f.get("Custom.DateReported")
+    if date_reported:
+        try:
+            fields["customfield_12872"] = convert_ado_datetime(date_reported)
+            log_to_excel(wi_id, None, "Date Reported", "Success", f"Date: {date_reported[:10]}")
+        except Exception as e:
+            log_to_excel(wi_id, None, "Date Reported", "Failed", str(e)[:100])
+
+    # Origin Ticket Assigned To
+    origin_ticket_assigned = f.get("Custom.OriginTicketAssignedTo")
+    if origin_ticket_assigned:
+        origin_email = None
+
+        if isinstance(origin_ticket_assigned, dict):
+            origin_email = origin_ticket_assigned.get("uniqueName") or origin_ticket_assigned.get("mail")
+        elif isinstance(origin_ticket_assigned, str):
+            origin_email = origin_ticket_assigned
+
+        if origin_email:
+            origin_account_id = get_jira_account_id_for_email(origin_email)
+
+            if origin_account_id:
+                fields["customfield_12873"] = {"id": origin_account_id}
+                log_to_excel(wi_id, None, "Origin Ticket Assigned To", "Success", origin_email)
+            else:
+                log_to_excel(wi_id, None, "Origin Ticket Assigned To", "Failed", f"No mapping for: {origin_email}")
+
+    # Client Priority Level
+    client_priority = f.get("Custom.ClientPriorityLevel")
+    if client_priority:
+        fields["customfield_12874"] = {"value": client_priority}
+        log_to_excel(wi_id, None, "Client Priority Level", "Success", client_priority)
 
     # Cycle Time Start Date (Date Picker)
     cycle_time_start = f.get("Custom.CycleTimeStartDate")
@@ -1327,12 +1533,197 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Hotfix Production Date", "Success", hotfix_production_date[:10])
         except Exception as e:
             log_to_excel(wi_id, None, "Hotfix Production Date", "Failed", str(e)[:100])
-    
+
     # Release
     release_val = f.get("Custom.Release")
     if release_val:
         fields["customfield_11712"] = {"value": release_val}
         log_to_excel(wi_id, None, "Release", "Success", release_val)
+
+    # Bug Failure Analysis
+    bug_failure_val = f.get("Custom.BugFailureAnalysis")
+    if bug_failure_val:
+        fields["customfield_12820"] = {"value": bug_failure_val}
+        log_to_excel(wi_id, None, "Bug Failure Analysis", "Success", bug_failure_val)
+
+    # Bug User Analysis Subcategory
+    bug_user_analysis_subcat = f.get("Custom.BugUserAnalysisSubcategory")
+    if bug_user_analysis_subcat:
+        fields["customfield_12821"] = {"value": bug_user_analysis_subcat}
+        log_to_excel(wi_id, None, "Bug User Analysis Subcategory", "Success", bug_user_analysis_subcat)
+
+    # QA Bug User Analysis Subcategory
+    qa_bug_user_analysis_subcat = f.get("Custom.QABugUserAnalysisSubcategory")
+    if qa_bug_user_analysis_subcat:
+        fields["customfield_12822"] = {"value": qa_bug_user_analysis_subcat}
+        log_to_excel(wi_id, None, "QA Bug User Analysis Subcategory", "Success", qa_bug_user_analysis_subcat)
+
+    # Related User Story where Defect was Introduced
+    related_user_story = f.get("Custom.RelatedUserStorywhereDefectwasIntroduced")
+    if related_user_story:
+        fields["customfield_12823"] = {"value": related_user_story}
+        log_to_excel(wi_id, None, "Related User Story where Defect was Introduced", "Success", related_user_story)
+
+    # Team the bug is associated with
+    team_bug_assoc = f.get("Custom.Teamthebugisassociatedwith")
+    if team_bug_assoc:
+        fields["customfield_12824"] = {"value": team_bug_assoc}
+        log_to_excel(wi_id, None, "Team the bug is associated with", "Success", team_bug_assoc)
+
+    # Developer who Introduced Defect
+    developer_defect = f.get("Custom.DeveloperwhoIntroducedDefect")
+    if developer_defect:
+        fields["customfield_12825"] = str(developer_defect)
+        log_to_excel(wi_id, None, "Developer who Introduced Defect", "Success", developer_defect)
+
+    # QA who originally tested introduced Defect
+    qa_original_tester = f.get("Custom.QAwhooriginallytestedintroducedDefect")
+    if qa_original_tester:
+        qa_email = None
+
+        if isinstance(qa_original_tester, dict):
+            qa_email = qa_original_tester.get("uniqueName") or qa_original_tester.get("mail")
+
+        elif isinstance(qa_original_tester, str):
+            qa_email = qa_original_tester
+
+        if qa_email:
+            qa_account_id = get_jira_account_id_for_email(qa_email)
+
+            if qa_account_id:
+                fields["customfield_12826"] = {"id": qa_account_id}
+                log_to_excel(wi_id, None, "QA who originally tested introduced Defect", "Success", qa_email)
+            else:
+                log_to_excel(wi_id, None, "QA who originally tested introduced Defect", "Warning", f"No mapping for: {qa_email}")
+
+    # Release where Bug was introduced
+    release_bug_intro = f.get("Custom.ReleasewhereBugwasintroduced")
+    if release_bug_intro:
+        fields["customfield_12859"] = {"value": release_bug_intro}
+        log_to_excel(wi_id, None, "Release where Bug was introduced", "Success", release_bug_intro)
+
+    # What type of defect is it
+    defect_type = f.get("Custom.Whattypeofdefectisit")
+    if defect_type:
+        fields["customfield_12860"] = {"value": defect_type}
+        log_to_excel(wi_id, None, "What type of defect is it", "Success", defect_type)
+
+    # Is this Defect related to a testing issue
+    testing_issue = f.get("Custom.IsthisDefectrelatedtoatestingissue")
+    if testing_issue:
+        fields["customfield_12861"] = {"value": testing_issue}
+        log_to_excel(wi_id, None, "Is this Defect related to a testing issue", "Success", testing_issue)
+
+    # QA Bug User Analysis Subcategory
+    qa_bug_user_analysis = f.get("Custom.QABugUserAnalysisSubcategory")
+    if qa_bug_user_analysis:
+        fields["customfield_12862"] = {"value": qa_bug_user_analysis}
+        log_to_excel(wi_id, None, "QA Bug User Analysis Subcategory", "Success", qa_bug_user_analysis)
+
+    # Impacted or Affected Application by the Bug
+    impacted_app = f.get("Custom.ImpactedorAffectedApplicationbytheBug")
+    if impacted_app:
+        fields["customfield_12863"] = {"value": impacted_app}
+        log_to_excel(wi_id, None, "Impacted or Affected Application by the Bug", "Success", impacted_app)
+
+    # QA who introduced defect
+    qa_introduced_defect = f.get("Custom.QAwhointroduceddefect")
+    if qa_introduced_defect:
+        qa_email = None
+
+        if isinstance(qa_introduced_defect, dict):
+            qa_email = qa_introduced_defect.get("uniqueName") or qa_introduced_defect.get("mail")
+
+        elif isinstance(qa_introduced_defect, str):
+            qa_email = qa_introduced_defect
+
+        if qa_email:
+            qa_account_id = get_jira_account_id_for_email(qa_email)
+
+            if qa_account_id:
+                fields["customfield_12864"] = {"id": qa_account_id}
+                log_to_excel(wi_id, None, "QA who introduced defect", "Success", qa_email)
+            else:
+                log_to_excel(wi_id, None, "QA who introduced defect", "Warning", f"No mapping for: {qa_email}")
+
+    # CYPRESS
+    cypress_val = f.get("Custom.CYPRESS")
+    if cypress_val:
+        fields["customfield_12865"] = {"value": cypress_val}
+        log_to_excel(wi_id, None, "CYPRESS", "Success", cypress_val)
+
+    # Trend Notes
+    trend_notes = f.get("Custom.TrendNotes")
+    if trend_notes:
+        fields["customfield_12866"] = {"value": trend_notes}
+        log_to_excel(wi_id, None, "Trend Notes", "Success", trend_notes)
+
+    # CTMS
+    ctms_val = f.get("Custom.CTMS")
+    if ctms_val:
+        fields["customfield_12867"] = {"value": ctms_val}
+        log_to_excel(wi_id, None, "CTMS", "Success", ctms_val)
+
+    # QA Comment
+    qa_comment = f.get("Custom.QAComment")
+    if qa_comment:
+        clean_html_val = clean_html_to_text(qa_comment)
+        fields["customfield_12868"] = to_adf_doc(clean_html_val)
+        log_to_excel(wi_id, None, "QA Comment", "Success", f"Length: {len(clean_html_val)}")
+
+    # CTMS Comment
+    ctms_comment = f.get("Custom.CTMSComment")
+    if ctms_comment:
+        clean_html_val = clean_html_to_text(ctms_comment)
+        fields["customfield_12869"] = to_adf_doc(clean_html_val)
+        log_to_excel(wi_id, None, "CTMS Comment", "Success", f"Length: {len(clean_html_val)}")
+
+    # Trend Notes Comment
+    trend_notes_comment = f.get("Custom.TrendNotesComment")
+    if trend_notes_comment:
+        clean_html_val = clean_html_to_text(trend_notes_comment)
+        fields["customfield_12870"] = to_adf_doc(clean_html_val)
+        log_to_excel(wi_id, None, "Trend Notes Comment", "Success", f"Length: {len(clean_html_val)}")
+
+    # Implementation Date
+    implementation_date_val = f.get("Custom.ImplementationDate")
+    if implementation_date_val:
+        try:
+            implementation_date = convert_ado_datetime(implementation_date_val)
+            if implementation_date:
+                fields["customfield_11755"] = implementation_date
+                log_to_excel(wi_id, None, "Implementation Date", "Success", implementation_date_val[:10])
+        except Exception as e:
+            log_to_excel(wi_id, None, "Implementation Date", "Failed", str(e)[:100])
+
+    # Status Dropdown
+    status_dropdown = f.get("Custom.StatusDropdown")
+    if status_dropdown:
+        fields["customfield_11756"] = {"value": status_dropdown}
+        log_to_excel(wi_id, None, "Status Dropdown", "Success", status_dropdown)
+
+    # CAP Author
+    cap_author = f.get("Custom.CAPAuthor")
+    if cap_author:
+        cap_author_email = None
+        if isinstance(cap_author, dict):
+            cap_author_email = cap_author.get("uniqueName") or cap_author.get("mail")
+        elif isinstance(cap_author, str):
+            cap_author_email = cap_author
+        if cap_author_email:
+            cap_account_id = get_jira_account_id_for_email(cap_author_email)
+            if cap_account_id:
+                fields["customfield_11758"] = {"id": cap_account_id}
+                log_to_excel(wi_id, None, "CAP Author", "Success", cap_author_email)
+            else:
+                log_to_excel(wi_id, None, "CAP Author", "Warning", f"No mapping for: {cap_author_email}")
+
+    # Corrective Action Plan
+    corrective_action_plan = f.get("Microsoft.VSTS.CMMI.CorrectiveActionPlan")
+    if corrective_action_plan:
+        clean_html_val = clean_html_to_text(corrective_action_plan)
+        fields["customfield_11757"] = to_adf_doc(clean_html_val)
+        log_to_excel(wi_id, None, "Corrective Action Plan", "Success", f"Length: {len(clean_html_val)}")
 
     # Assignee
     account_id = get_jira_account_id_for_email(assignee_email)
@@ -1344,7 +1735,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Assignee", "Warning", f"No mapping for: {assignee_email}")
         else:
             log_to_excel(wi_id, None, "Assignee", "Skipped", "No assignee in ADO")
-    
+
     # Reporter
     created_by = f.get("System.CreatedBy")
     reporter_email = None
@@ -1361,32 +1752,38 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Reporter", "Success", f"Default reporter used")
         except Exception as e:
             log_to_excel(wi_id, None, "Reporter", "Failed", str(e)[:100])
-    
+
     # ADO Work Item Link
     wid = f.get("System.Id")
     if wid:
         ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
         fields["customfield_11600"] = f"{ado_base}/_workitems/edit/{wid}"
         log_to_excel(wi_id, None, "ADO Link", "Success", f"WI: {wid}")
-    
+
+    # Area Path (select-list)
+    area_path = f.get("System.AreaPath")
+    if area_path:
+        fields["customfield_12910"] = {"value": area_path}
+        log_to_excel(wi_id, None, "Area Path", "Success", area_path)
+
     # Area Path
     area = f.get("System.AreaPath")
     if area:
         fields["customfield_11601"] = str(area)
         log_to_excel(wi_id, None, "Area Path", "Success", area)
-    
+
     # Iteration Path
     iteration = f.get("System.IterationPath")
     if iteration:
         fields["customfield_11602"] = str(iteration)
         log_to_excel(wi_id, None, "Iteration Path", "Success", iteration)
-    
+
     # Reason
     reason = f.get("System.Reason")
     if reason:
         fields["customfield_11603"] = str(reason)
         log_to_excel(wi_id, None, "Reason", "Success", reason)
-    
+
     log_to_excel(wi_id, None, "Field Mapping", "Complete", f"Mapped {len(fields)} fields total")
     return fields
 
@@ -1886,8 +2283,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2025-11-01' "
-        "AND [System.CreatedDate] <= '2026-02-21' AND [System.WorkItemType] = 'Defect'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-02-21' "
+        "AND [System.CreatedDate] <= '2026-02-28' AND [System.WorkItemType] = 'Defect'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
@@ -1938,6 +2335,7 @@ def migrate_all():
 
             # 3) ReproSteps
             repro_steps_html = wi.get("fields", {}).get("Microsoft.VSTS.TCM.ReproSteps", "")
+            repro_steps_html = fix_relative_urls_in_repro_steps(repro_steps_html)
             if repro_steps_html:
                 try:
                     attachment_map = download_and_upload_reprosteps_images(
@@ -1986,11 +2384,11 @@ def migrate_all():
             # except Exception as e:
             #     log_to_excel(wi_id, issue_key, "Update Steps", "Error", str(e)[:100])
 
-            # 5) Description
+            # 5) Description — NOW USES improved_process_description_to_adf FOR TABLE SUPPORT
             try:
                 raw_desc = wi.get("fields", {}).get("System.Description", "")
                 if raw_desc:
-                    desc_adf = process_description_to_adf(issue_key, raw_desc, wi_id=wi_id)
+                    desc_adf = improved_process_description_to_adf(issue_key, raw_desc, wi_id=wi_id)
                     base = clean_base(JIRA_URL)
                     url = f"{base}/rest/api/3/issue/{issue_key}"
                     r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
