@@ -21,8 +21,150 @@ from typing import Dict, List, Tuple, Set
 load_dotenv()
 
 # ============================================================================
-# INTEGRATED TABLE CONVERSION FUNCTIONS (NEW)
+# INTEGRATED TABLE CONVERSION FUNCTIONS
 # ============================================================================
+
+def expand_table_to_grid(table_elem):
+    """
+    Expand an HTML table with rowspan/colspan into a normalized 2D grid.
+    Each cell is a tuple: ('origin', td, orig_row, orig_col) for the real cell,
+    or ('span', td, orig_row, orig_col) for cells covered by a span.
+    None means the cell position is completely empty/missing.
+    """
+    all_trs = table_elem.find_all('tr')
+    grid = []
+
+    for row_idx, tr in enumerate(all_trs):
+        while len(grid) <= row_idx:
+            grid.append([])
+
+        col_cursor = 0
+        for td in tr.find_all(['td', 'th']):
+            # Skip columns already filled by a rowspan from a previous row
+            while col_cursor < len(grid[row_idx]) and grid[row_idx][col_cursor] is not None:
+                col_cursor += 1
+
+            rowspan = int(td.get('rowspan', 1))
+            colspan = int(td.get('colspan', 1))
+
+            for r in range(rowspan):
+                for c in range(colspan):
+                    ri = row_idx + r
+                    ci = col_cursor + c
+                    while len(grid) <= ri:
+                        grid.append([])
+                    while len(grid[ri]) <= ci:
+                        grid[ri].append(None)
+                    if r == 0 and c == 0:
+                        grid[ri][ci] = ('origin', td, row_idx, col_cursor)
+                    else:
+                        grid[ri][ci] = ('span', td, row_idx, col_cursor)
+
+            col_cursor += colspan
+
+    return grid
+
+def _parse_html_table_to_adf(table_elem) -> Dict:
+    """
+    Convert a BeautifulSoup table element to a Jira ADF table node.
+    Correctly handles rowspan/colspan using grid expansion so spanned
+    cell content always lands in the right column.
+    """
+    grid = expand_table_to_grid(table_elem)
+    if not grid:
+        return None
+
+    num_cols = max(len(row) for row in grid) if grid else 0
+    # Normalize all rows to the same width
+    for row in grid:
+        while len(row) < num_cols:
+            row.append(None)
+
+    # Determine which columns have any real (origin) content
+    col_has_content = {c: False for c in range(num_cols)}
+    for row in grid:
+        for c, cell in enumerate(row):
+            if cell and cell[0] == 'origin' and cell[1].get_text(strip=True):
+                col_has_content[c] = True
+
+    real_cols = [c for c in range(num_cols) if col_has_content.get(c, False)]
+    if not real_cols:
+        real_cols = list(range(num_cols))
+
+    rendered_origins = set()
+    table_rows = []
+
+    for row in grid:
+        # Skip rows where every real column is either empty or a
+        # already-rendered span with no new content to show
+        row_has_visible = False
+        for c in real_cols:
+            cell = row[c] if c < len(row) else None
+            if cell is None:
+                continue
+            kind, td, orig_r, orig_c = cell
+            if kind == 'origin' and td.get_text(strip=True):
+                row_has_visible = True
+                break
+            if kind == 'span' and (orig_r, orig_c) not in rendered_origins:
+                if td.get_text(strip=True):
+                    row_has_visible = True
+                    break
+
+        if not row_has_visible:
+            # Mark any unrendered spans as rendered so they don't leak later
+            for c in real_cols:
+                cell = row[c] if c < len(row) else None
+                if cell and cell[0] == 'span':
+                    rendered_origins.add((cell[2], cell[3]))
+            continue
+
+        is_header_row = any(
+            row[c][1].name == 'th'
+            for c in real_cols
+            if c < len(row) and row[c] and row[c][0] in ('origin', 'span')
+        )
+
+        row_cells = []
+        for c in real_cols:
+            cell = row[c] if c < len(row) else None
+            cell_type = "tableHeader" if is_header_row else "tableCell"
+
+            if cell is None:
+                row_cells.append({
+                    "type": cell_type,
+                    "content": [{"type": "paragraph", "content": []}]
+                })
+                continue
+
+            kind, td, orig_r, orig_c = cell
+            origin_key = (orig_r, orig_c)
+
+            if kind == 'origin':
+                rendered_origins.add(origin_key)
+                cell_content = _extract_cell_content(td)
+            else:  # 'span'
+                if origin_key not in rendered_origins:
+                    rendered_origins.add(origin_key)
+                    cell_content = _extract_cell_content(td)
+                else:
+                    cell_content = [{"type": "text", "text": ""}]
+
+            row_cells.append({
+                "type": cell_type,
+                "content": [{"type": "paragraph", "content": cell_content}]
+            })
+
+        if row_cells:
+            table_rows.append({"type": "tableRow", "content": row_cells})
+
+    if table_rows:
+        return {
+            "type": "table",
+            "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
+            "content": table_rows
+        }
+    return None
 
 def _extract_cell_content(cell: Tag) -> List[Dict]:
     """
@@ -209,71 +351,8 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
         return False
 
     def process_table(table_elem) -> Dict:
-        """Convert an HTML table element to an ADF table node.
-        Skips rows and columns that are entirely empty (caused by ADO rowspan/colspan markup).
-        """
-        table_rows = []
-
-        # First pass: collect all rows with their real cell count
-        all_rows = table_elem.find_all("tr")
-
-        # Track which column indices have ANY content across all rows
-        # so we can drop entirely-empty columns too
-        col_has_content = {}
-
-        raw_rows = []
-        for tr in all_rows:
-            tds = tr.find_all(["td", "th"])
-            row_data = []
-            for col_idx, td in enumerate(tds):
-                text = td.get_text(separator=" ", strip=True)
-                # Also check for images
-                has_img = bool(td.find("img"))
-                has_content = bool(text) or has_img
-                row_data.append((td, has_content))
-                if has_content:
-                    col_has_content[col_idx] = True
-            raw_rows.append(row_data)
-
-        # Identify columns that have content in at least one row
-        # (This handles phantom extra columns from colspan/rowspan)
-        max_cols = max((len(r) for r in raw_rows), default=0)
-        # A column is "real" if it has content anywhere OR if it's the only column
-        real_col_indices = {i for i in range(max_cols) if col_has_content.get(i, False)}
-        # If NO columns have content at all, keep all (edge case)
-        if not real_col_indices:
-            real_col_indices = set(range(max_cols))
-
-        for tr, row_data in zip(all_rows, raw_rows):
-            # Skip rows where ALL cells are empty
-            if not any(has_content for _, has_content in row_data):
-                continue
-
-            is_header_row = bool(tr.find("th"))
-            row_cells = []
-
-            for col_idx, (td, has_content) in enumerate(row_data):
-                # Skip columns that are empty everywhere
-                if col_idx not in real_col_indices:
-                    continue
-
-                cell_type = "tableHeader" if (td.name == "th" or is_header_row) else "tableCell"
-                cell_content = _extract_cell_content(td)
-                row_cells.append({
-                    "type": cell_type,
-                    "content": [{"type": "paragraph", "content": cell_content}]
-                })
-
-            if row_cells:
-                table_rows.append({"type": "tableRow", "content": row_cells})
-
-        if table_rows:
-            return {
-                "type": "table",
-                "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
-                "content": table_rows
-            }
-        return None
+        """Delegate to the shared rowspan-aware table parser."""
+        return _parse_html_table_to_adf(table_elem)
 
     def walk(node):
         """Walk a DOM node and emit ADF block nodes into adf_content."""
@@ -337,24 +416,49 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
 
         # ---- Inline formatting tags — accumulate into buffer ----
         if name in ("b", "strong"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "strong"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "strong"}]})
+            else:
+                # Has non-text children (e.g. <img>) — recurse so they aren't dropped
+                for child in node.children:
+                    walk(child)
             return
 
         if name in ("i", "em"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "em"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "em"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "u":
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "underline"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "underline"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "a":
@@ -1430,8 +1534,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
 
-    ado_type = f.get("System.WorkItemType", "Task")
-    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
+    ado_type = f.get("System.WorkItemType", "Initiative")
+    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Initiative")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
     tags = f.get("System.Tags", "")
@@ -2548,7 +2652,21 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
             flush_text()
             src = (node.get("src") or "").strip()
             if src:
-                parts.append({"kind": "image", "src": src})
+                if src.startswith("data:"):
+                    try:
+                        import base64, uuid
+                        header, b64data = src.split(",", 1)
+                        mime = header.split(":")[1].split(";")[0]
+                        ext = mime.split("/")[1]
+                        filename = f"inline_image_{uuid.uuid4().hex[:8]}.{ext}"
+                        local_path = os.path.join(OUTPUT_DIR, filename)
+                        with open(local_path, "wb") as f:
+                            f.write(base64.b64decode(b64data))
+                        parts.append({"kind": "image_local", "path": local_path, "filename": filename})
+                    except Exception as e:
+                        log(f"   ⚠️ Failed to decode base64 image: {e}")
+                else:
+                    parts.append({"kind": "image", "src": src})
             return
 
         if name == "a":
@@ -2567,9 +2685,18 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
             text_buf.append("\n")
             return
 
+        if name == "table":
+            flush_text()
+            log(f"   🔍 DEBUG: table handler hit, rows={len(node.find_all('tr'))}")  # add this
+            tbl = _parse_html_table_to_adf(node)
+            log(f"   🔍 DEBUG: tbl result = {tbl is not None}")  # add this
+            if tbl:
+                parts.append({"kind": "table_adf", "adf": tbl})
+            return
+
         is_block = name in {"p", "div", "li", "ul", "ol",
                              "h1", "h2", "h3", "h4", "h5", "h6",
-                             "blockquote", "table", "tr", "td", "th"}
+                             "blockquote", "tr", "td", "th"}
         if is_block:
             flush_text()
             for child in node.children:
@@ -2601,15 +2728,53 @@ def build_comment_body_with_images(parts: List[Dict], image_url_map: Dict[str, s
             if txt:
                 txt = re.sub(r'\n{3,}', '\n\n', txt)
                 body_parts.append(txt)
-        elif p["kind"] == "image":
-            jira_url = image_url_map.get(p["src"])
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
             if jira_url:
                 body_parts.append(f"!{jira_url}!")
             else:
-                body_parts.append(f"[Image failed to load: {p['src'][:60]}...]")
+                body_parts.append(f"[Image failed to load]")
 
     return "\n\n".join(body_parts).strip()
 
+def _has_table_parts(parts: List[Dict]) -> bool:
+    return any(p["kind"] == "table_adf" for p in parts)
+
+
+def build_comment_adf_with_tables(parts: List[Dict], image_url_map: Dict[str, str],
+                                   meta_line: str) -> Dict:
+    """Build full ADF doc for comments containing tables."""
+    content = []
+    content.append({
+        "type": "paragraph",
+        "content": [{"type": "text", "text": meta_line,
+                     "marks": [{"type": "strong"}]}]
+    })
+    for p in parts:
+        if p["kind"] == "text":
+            txt = p["value"].strip()
+            if txt:
+                for line in re.split(r'\n{2,}', txt):
+                    line = line.strip()
+                    if line:
+                        content.append({
+                            "type": "paragraph",
+                            "content": [{"type": "text", "text": line}]
+                        })
+        elif p["kind"] == "table_adf":
+            content.append(p["adf"])
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
+            if jira_url:
+                content.append({
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": jira_url,
+                                 "marks": [{"type": "link",
+                                            "attrs": {"href": jira_url}}]}]
+                })
+    return {"type": "doc", "version": 1, "content": content}
 
 def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_index: int = 0,
                               author: str = "Unknown", created_str: str = ""):
@@ -2639,6 +2804,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
 
     elif comment_format == "html":
         parts = _parse_comment_html(rendered_text or raw_text)
+        log(f"   🔍 DEBUG parts kinds: {[p['kind'] for p in parts]}") 
 
     else:  # plain text — run through markdown improved for mention resolution
         log(f"   🔍 Resolving mentions for comment {comment_index} (plain)...")
@@ -2650,7 +2816,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
         log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success", "Meta-only (no content)")
         return
 
-    has_images = any(p["kind"] == "image" for p in parts)
+    has_images = any(p["kind"] in ("image", "image_local") for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
     log(f"   📝 Comment[{comment_index}]: {len(parts)} parts | text={has_text} | images={sum(1 for p in parts if p['kind'] == 'image')}")
@@ -2658,10 +2824,28 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     # No images — post as plain text comment
     if not has_images:
         full_text = "\n\n".join(p["value"] for p in parts if p["kind"] == "text").strip()
-        body = f"{meta_line}\n\n{full_text}" if full_text else meta_line
+        
+        if _has_table_parts(parts):
+            adf_body = build_comment_adf_with_tables(parts, {}, meta_line)
+            comment_url = f"{clean_base(JIRA_URL)}/rest/api/3/issue/{issue_key}/comment"
+            headers = {"Accept": "application/json", "Content-Type": "application/json"}
+            r = api_call_with_retry(
+                requests.post, comment_url,
+                auth=jira_auth(), headers=headers, json={"body": adf_body},
+                label=f"Jira post comment[{comment_index}] (ADF/table) to {issue_key}"
+            )
+            if r.status_code in (200, 201):
+                log(f"   ✅ Comment[{comment_index}] posted with table")
+                log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success", "Table comment")
+            else:
+                log(f"   ❌ Comment[{comment_index}] failed: {r.status_code}")
+                log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Failed", f"HTTP {r.status_code}")
+            return
+        
+        body = f"{meta_line}\n\n{full_text}" if full_text else meta_line  # ← THIS LINE WAS MISSING
         _post_single_comment(issue_key, body, wi_id=wi_id, comment_index=comment_index)
         log_to_excel(wi_id, issue_key, f"Comment[{comment_index}]", "Success",
-                     f"Text-only ({len(body)} chars)")
+                        f"Text-only ({len(body)} chars)")
         return
 
     # Has images — download from ADO and upload to Jira
@@ -2670,38 +2854,44 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     img_fail_count = 0
 
     for p in parts:
-        if p["kind"] != "image":
+        if p["kind"] not in ("image", "image_local"):
             continue
 
-        src = p["src"]
-        if src in image_url_map:
+        if p["kind"] == "image_local":
+            src_key = p["path"]
+            local_file = p["path"]
+            filename = p["filename"]
+        else:
+            src_key = p["src"]
+            if src_key in image_url_map:
+                continue
+            parsed_url = urlparse(src_key)
+            query = parse_qs(parsed_url.query or "")
+            filename = query.get("fileName", [f"image_{comment_index}.png"])[0]
+            log(f"   📥 Downloading image: {filename}")
+            local_file = download_images_to_ado_attachments(src_key)
+
+        if src_key in image_url_map:
             continue
-
-        parsed_url = urlparse(src)
-        query = parse_qs(parsed_url.query or "")
-        filename = query.get("fileName", [f"image_{comment_index}.png"])[0]
-
-        log(f"   📥 Downloading image: {filename}")
-        local_file = download_images_to_ado_attachments(src)
 
         if not local_file:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
             continue
 
         log(f"   📤 Uploading image to Jira: {filename}")
         upload_info = jira_upload_attachment(issue_key, local_file)
 
         if upload_info and upload_info.get("content"):
-            image_url_map[src] = upload_info["content"]
+            image_url_map[src_key] = upload_info["content"]
             img_upload_count += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
-            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
             img_upload_count += 1
         else:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
 
         try:
             if os.path.exists(local_file):
@@ -2709,16 +2899,25 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
         except Exception:
             pass
 
-    # Build and post final comment body with images interleaved
-    final_body = build_comment_body_with_images(parts, image_url_map, meta_line, issue_key)
-
-    comment_url = f"{clean_base(JIRA_URL)}/rest/api/2/issue/{issue_key}/comment"
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
-    r = api_call_with_retry(
-        requests.post, comment_url,
-        auth=jira_auth(), headers=headers, json={"body": final_body},
-        label=f"Jira post comment[{comment_index}] to {issue_key}"
-    )
+    # Build and post final comment body — use ADF (api/3) if tables present, else wiki (api/2)
+    if _has_table_parts(parts):
+        adf_body = build_comment_adf_with_tables(parts, image_url_map, meta_line)
+        comment_url = f"{clean_base(JIRA_URL)}/rest/api/3/issue/{issue_key}/comment"
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        r = api_call_with_retry(
+            requests.post, comment_url,
+            auth=jira_auth(), headers=headers, json={"body": adf_body},
+            label=f"Jira post comment[{comment_index}] (ADF/table) to {issue_key}"
+        )
+    else:
+        final_body = build_comment_body_with_images(parts, image_url_map, meta_line, issue_key)
+        comment_url = f"{clean_base(JIRA_URL)}/rest/api/2/issue/{issue_key}/comment"
+        headers = {"Accept": "application/json", "Content-Type": "application/json"}
+        r = api_call_with_retry(
+            requests.post, comment_url,
+            auth=jira_auth(), headers=headers, json={"body": final_body},
+            label=f"Jira post comment[{comment_index}] to {issue_key}"
+        )
 
     if r.status_code in (200, 201):
         log(f"   ✅ Comment[{comment_index}] posted ({img_upload_count} images OK, {img_fail_count} failed)")
@@ -2770,7 +2969,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["822573"]
+    SPECIFIC_ID = ["879931"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
