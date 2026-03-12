@@ -588,15 +588,26 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
         if name in ("ul", "ol"):
             flush_inline()
             list_type = "bulletList" if name == "ul" else "orderedList"
-            items = []
-            for li in node.find_all("li", recursive=False):
-                t = li.get_text(strip=True)
-                if t:
-                    items.append({
-                        "type": "listItem",
-                        "content": [{"type": "paragraph",
-                                     "content": [{"type": "text", "text": t}]}]
-                    })
+
+            def collect_list_items(list_node):
+                items = []
+                for child in list_node.children:
+                    if isinstance(child, Tag):
+                        cname = (child.name or "").lower()
+                        if cname == "li":
+                            t = child.get_text(strip=True)
+                            if t:
+                                items.append({
+                                    "type": "listItem",
+                                    "content": [{"type": "paragraph",
+                                                 "content": [{"type": "text", "text": t}]}]
+                                })
+                        elif cname in ("ul", "ol"):
+                            # Recurse into nested list wrapper like <ul><ol><li>
+                            items.extend(collect_list_items(child))
+                return items
+
+            items = collect_list_items(node)
             if items:
                 adf_content.append({"type": list_type, "content": items})
             return
