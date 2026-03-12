@@ -1177,15 +1177,26 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
         if name in ("ul", "ol"):
             flush_inline()
             list_type = "bulletList" if name == "ul" else "orderedList"
-            items = []
-            for li in node.find_all("li", recursive=False):
-                t = li.get_text(strip=True)
-                if t:
-                    items.append({
-                        "type": "listItem",
-                        "content": [{"type": "paragraph",
-                                     "content": [{"type": "text", "text": t}]}]
-                    })
+
+            def collect_list_items(list_node):
+                items = []
+                for child in list_node.children:
+                    if isinstance(child, Tag):
+                        cname = (child.name or "").lower()
+                        if cname == "li":
+                            t = child.get_text(strip=True)
+                            if t:
+                                items.append({
+                                    "type": "listItem",
+                                    "content": [{"type": "paragraph",
+                                                 "content": [{"type": "text", "text": t}]}]
+                                })
+                        elif cname in ("ul", "ol"):
+                            # Recurse into nested list wrapper like <ul><ol><li>
+                            items.extend(collect_list_items(child))
+                return items
+
+            items = collect_list_items(node)
             if items:
                 adf_content.append({"type": list_type, "content": items})
             return
@@ -2629,7 +2640,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["815841"]
+    SPECIFIC_ID = ["878759"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2730,43 +2741,26 @@ def migrate_all():
                 json.dump(mapping, f, indent=2)
 
             # 5b) System or Client Impact
-            system_client_impact_html = wi.get("fields", {}).get(
-                "Custom.SystemorClientImpactofnotfixinginCurrentRelease", "")
-            if system_client_impact_html:
-                try:
-                    attachment_map_impact = download_and_upload_reprosteps_images(
+            try:
+                system_client_impact_html = wi.get("fields", {}).get(
+                    "Custom.SystemorClientImpactofnotfixinginCurrentRelease", "")
+                if system_client_impact_html:
+                    impact_adf = improved_process_description_to_adf(
                         issue_key, system_client_impact_html, wi_id=wi_id)
-                    if attachment_map_impact:
-                        time.sleep(2)
-                    verified_map_impact = {}
-                    for src, att_id in attachment_map_impact.items():
-                        base = clean_base(JIRA_URL)
-                        verify_url = f"{base}/rest/api/3/attachment/{att_id}"
-                        verify_response = api_request("get", verify_url, wi_id=wi_id, issue_key=issue_key,
-                                                       step=f"Verify Impact Attachment {att_id}", auth=jira_auth())
-                        if verify_response.status_code == 200:
-                            verified_map_impact[src] = att_id
-                    impact_adf = convert_ado_reprosteps_to_jira_adf(
-                        system_client_impact_html, verified_map_impact, issue_key)
-                    if impact_adf.get("content"):
-                        base = clean_base(JIRA_URL)
-                        url = f"{base}/rest/api/3/issue/{issue_key}"
-                        r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
-                                        step="Update SystemClientImpact", auth=jira_auth(),
-                                        headers={"Content-Type": "application/json"},
-                                        json={"fields": {"customfield_12720": impact_adf}})
-                        if r.status_code in (200, 204):
-                            log(f"   ✅ Updated System/Client Impact for {issue_key}")
-                            log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Success",
-                                         "System/Client Impact updated")
-                        else:
-                            log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Failed",
-                                         f"HTTP {r.status_code}: {r.text[:100]}")
-                except Exception as e:
-                    log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Error", str(e)[:100])
-            else:
-                log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Skipped",
-                             "No System/Client Impact content")
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update SystemClientImpact", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_12720": impact_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Success", "System/Client Impact updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Skipped", "No System/Client Impact content")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Error", str(e)[:100])
 
             # 6) Transition
             try:
