@@ -1177,15 +1177,26 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
         if name in ("ul", "ol"):
             flush_inline()
             list_type = "bulletList" if name == "ul" else "orderedList"
-            items = []
-            for li in node.find_all("li", recursive=False):
-                t = li.get_text(strip=True)
-                if t:
-                    items.append({
-                        "type": "listItem",
-                        "content": [{"type": "paragraph",
-                                     "content": [{"type": "text", "text": t}]}]
-                    })
+
+            def collect_list_items(list_node):
+                items = []
+                for child in list_node.children:
+                    if isinstance(child, Tag):
+                        cname = (child.name or "").lower()
+                        if cname == "li":
+                            t = child.get_text(strip=True)
+                            if t:
+                                items.append({
+                                    "type": "listItem",
+                                    "content": [{"type": "paragraph",
+                                                 "content": [{"type": "text", "text": t}]}]
+                                })
+                        elif cname in ("ul", "ol"):
+                            # Recurse into nested list wrapper like <ul><ol><li>
+                            items.extend(collect_list_items(child))
+                return items
+
+            items = collect_list_items(node)
             if items:
                 adf_content.append({"type": list_type, "content": items})
             return
@@ -2196,27 +2207,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         fields["customfield_12867"] = {"value": ctms_val}
         log_to_excel(wi_id, None, "CTMS", "Success", ctms_val)
 
-    # QA Comment
-    qa_comment = f.get("Custom.QAComment")
-    if qa_comment:
-        clean_html_val = clean_html_to_text(qa_comment)
-        fields["customfield_12868"] = to_adf_doc(clean_html_val)
-        log_to_excel(wi_id, None, "QA Comment", "Success", f"Length: {len(clean_html_val)}")
-
-    # CTMS Comment
-    ctms_comment = f.get("Custom.CTMSComment")
-    if ctms_comment:
-        clean_html_val = clean_html_to_text(ctms_comment)
-        fields["customfield_12869"] = to_adf_doc(clean_html_val)
-        log_to_excel(wi_id, None, "CTMS Comment", "Success", f"Length: {len(clean_html_val)}")
-
-    # Trend Notes Comment
-    trend_notes_comment = f.get("Custom.TrendNotesComment")
-    if trend_notes_comment:
-        clean_html_val = clean_html_to_text(trend_notes_comment)
-        fields["customfield_12870"] = to_adf_doc(clean_html_val)
-        log_to_excel(wi_id, None, "Trend Notes Comment", "Success", f"Length: {len(clean_html_val)}")
-
     # Implementation Date
     implementation_date_val = f.get("Custom.ImplementationDate")
     if implementation_date_val:
@@ -2249,13 +2239,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
                 log_to_excel(wi_id, None, "CAP Author", "Success", cap_author_email)
             else:
                 log_to_excel(wi_id, None, "CAP Author", "Warning", f"No mapping for: {cap_author_email}")
-
-    # Corrective Action Plan
-    corrective_action_plan = f.get("Microsoft.VSTS.CMMI.CorrectiveActionPlan")
-    if corrective_action_plan:
-        clean_html_val = clean_html_to_text(corrective_action_plan)
-        fields["customfield_11757"] = to_adf_doc(clean_html_val)
-        log_to_excel(wi_id, None, "Corrective Action Plan", "Success", f"Length: {len(clean_html_val)}")
 
     # Assignee
     account_id = get_jira_account_id_for_email(assignee_email)
@@ -3075,7 +3058,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["843714"]
+    SPECIFIC_ID = ["685285"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -3211,6 +3194,90 @@ def migrate_all():
                     log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Skipped", "No Proposed Fix")
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Error", str(e)[:100])
+
+            # 5c) QA Comment
+            try:
+                qa_comment_html = wi.get("fields", {}).get("Custom.QAComment", "")
+                if qa_comment_html:
+                    qa_comment_adf = improved_process_description_to_adf(
+                        issue_key, qa_comment_html, wi_id=wi_id)
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update QAComment", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_12868": qa_comment_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update QAComment", "Success", "QA Comment updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update QAComment", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update QAComment", "Skipped", "No QA Comment")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update QAComment", "Error", str(e)[:100])
+
+            # 5d) CTMS Comment
+            try:
+                ctms_comment_html = wi.get("fields", {}).get("Custom.CTMSComment", "")
+                if ctms_comment_html:
+                    ctms_comment_adf = improved_process_description_to_adf(
+                        issue_key, ctms_comment_html, wi_id=wi_id)
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update CTMSComment", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_12869": ctms_comment_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update CTMSComment", "Success", "CTMS Comment updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update CTMSComment", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update CTMSComment", "Skipped", "No CTMS Comment")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update CTMSComment", "Error", str(e)[:100])
+
+            # 5e) Trend Notes Comment
+            try:
+                trend_notes_html = wi.get("fields", {}).get("Custom.TrendNotesComment", "")
+                if trend_notes_html:
+                    trend_notes_adf = improved_process_description_to_adf(
+                        issue_key, trend_notes_html, wi_id=wi_id)
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update TrendNotesComment", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_12870": trend_notes_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update TrendNotesComment", "Success", "Trend Notes Comment updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update TrendNotesComment", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update TrendNotesComment", "Skipped", "No Trend Notes Comment")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update TrendNotesComment", "Error", str(e)[:100])
+
+            # 5f) Corrective Action Plan
+            try:
+                corrective_action_html = wi.get("fields", {}).get("Microsoft.VSTS.CMMI.CorrectiveActionPlan", "")
+                if corrective_action_html:
+                    corrective_action_adf = improved_process_description_to_adf(
+                        issue_key, corrective_action_html, wi_id=wi_id)
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update CorrectiveActionPlan", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_11757": corrective_action_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update CorrectiveActionPlan", "Success", "Corrective Action Plan updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update CorrectiveActionPlan", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update CorrectiveActionPlan", "Skipped", "No Corrective Action Plan")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update CorrectiveActionPlan", "Error", str(e)[:100])
 
             # 6) Transition
             try:
