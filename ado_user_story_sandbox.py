@@ -37,6 +37,9 @@ JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
 Email = os.getenv("EMAIL")
 JIRA_ACCOUNT_ID = os.getenv("JIRA_ACCOUNT_ID")
 
+# CODE 1 DIFFERENCE — "User Story" maps to "User Story" in Code 1.
+# In this file (Code 2) it maps to "Story" because the target Jira project
+# uses "Story" as the issue type name rather than "User Story".
 WORKITEM_TYPE_MAP = {
     "Bug": "Bug",
     "Defect": "Defect",
@@ -75,6 +78,15 @@ RESOLUTION_MAP = {
     "Will not Fix": "Won't Do"
 }
 
+# CODE 1 DIFFERENCE — Code 1's STATE_MAP has additional/different entries:
+#   "Under Investigation" -> "In Refinement"   (present in Code 1, absent here)
+#   "Waiting for customer" -> "Waiting for customer"  (present in Code 1, absent here)
+#   "In Refinement" -> "In Refinement"  (Code 1) vs "REFINEMENT" (this file)
+#   "Test Complete" -> "Ready to Release" (Code 1) vs "Ready for Release" (this file)
+# Code 2 has entries not in Code 1:
+#   "Blocked" -> "Hold"
+# These differences reflect the different Jira workflow configurations between
+# the Bug project (Code 1) and the User Story project (Code 2).
 STATE_MAP = {
     "New": "New",
     "In Refinement": "REFINEMENT",
@@ -386,6 +398,17 @@ _MARKDOWN_MENTION_RE = re.compile(
 )
 
 
+# CODE 1 DIFFERENCE — Code 1's _resolve_markdown_mentions adds a pre-processing step
+# at the very top of the function before any mention substitution:
+#
+#   import html as html_lib
+#   text = html_lib.unescape(text)
+#
+# This ensures that HTML entities (e.g. &amp;, &quot;, emoji encoded as &#x1F600;) in
+# the raw markdown text are decoded to their real characters BEFORE @<GUID> patterns
+# are resolved. Without this, if the text arrived from ADO with encoded entities, the
+# final comment body can contain raw entity strings instead of readable characters.
+# Code 2 omits this unescape step, so entities are left as-is in the output.
 def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
     guid_map = _get_ado_guid_map()
 
@@ -410,6 +433,30 @@ def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
     return _MARKDOWN_MENTION_RE.sub(replace_mention, text)
 
 
+# CODE 1 DIFFERENCE — Code 1 has a heavily expanded _convert_markdown_to_jira_wiki
+# implementation. The version here (Code 2) only handles bold and italic.
+# Code 1's version adds the following capabilities that are missing here:
+#
+#   1. _BOLD_START / _BOLD_END sentinel constants to avoid bold/italic regex collision.
+#   2. _inline_md_to_jira(text) helper that handles per-line inline conversions:
+#        - Inline code:       `code`            → {{code}}
+#        - Bold+italic:       ***text***        → *_text_*
+#        - Bold (sentinels):  **text**          → *text*  (via sentinels, safe from italic step)
+#        - Italic:            *text*            → _text_  (single * only, after bold extracted)
+#        - Markdown links:    [text](url)       → [text|url]  (skips image links starting with !)
+#        - Angle-bracket URLs: <https://...>   → [https://...]
+#   3. Full block-level parsing by splitting on '\n' and iterating lines:
+#        - ATX headings:      ### Heading       → h3. Heading  (strips trailing # too)
+#        - GFM pipe tables:   | col | col |     → || col || col ||  (header row gets ||...||,
+#                             |-----|-----|        data rows get |...|, separator rows are skipped,
+#                                                  <br> tags inside cells are stripped)
+#        - Unordered lists:   * item / - item   → * item  (depth controlled by leading spaces ÷ 2)
+#        - Ordered lists:     1. item           → # item  (depth controlled by leading spaces ÷ 2)
+#        - Regular lines:     pass through _inline_md_to_jira for inline conversion
+#
+# Code 2's version is two simple regex substitutions (bold and italic only) with no
+# heading, table, list, inline-code, or link support. This means markdown-formatted
+# comments from User Story work items in Code 2 lose all structure except bold/italic.
 def _convert_markdown_to_jira_wiki(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
     text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)
@@ -893,24 +940,49 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
 
         # ---- Inline formatting tags — accumulate into buffer ----
         if name in ("b", "strong"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "strong"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "strong"}]})
+            else:
+                # Has non-text children (e.g. <img>) — recurse so they aren't dropped
+                for child in node.children:
+                    walk(child)
             return
 
         if name in ("i", "em"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "em"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "em"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "u":
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "underline"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "underline"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "a":
@@ -1280,6 +1352,25 @@ def steps_formatter(xml_data):
     return steps_payload
 
 
+# CODE 1 DIFFERENCE — Code 1 defines a fix_relative_urls_in_repro_steps() function
+# that is NOT present in this file (Code 2). Code 1 calls it in migrate_all() on the
+# raw ReproSteps HTML immediately before processing, like so:
+#
+#   repro_steps_html = fix_relative_urls_in_repro_steps(repro_steps_html)
+#
+# The function uses a regex to find relative URLs of the form /HESource/... in src=""
+# and href="" attributes, and rewrites them to absolute Azure DevOps URLs:
+#
+#   def fix_relative_urls_in_repro_steps(repro_html: str) -> str:
+#       pattern = r'((?:src|href)=")(/HESource/[^"]*)'
+#       def replace_url(match):
+#           return match.group(1) + "https://dev.azure.com" + match.group(2)
+#       return re.sub(pattern, replace_url, repro_html)
+#
+# This matters for Bug work items where ADO stores embedded images with relative paths.
+# Code 2 skips this step because User Story work items do not use those relative URLs.
+
+
 def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id=None) -> Dict[str, str]:
     attachment_map = {}
     if not repro_html:
@@ -1550,6 +1641,11 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     steps_payload = None
     f = wi.get("fields", {})
     wi_id = wi.get("id")
+    # CODE 1 DIFFERENCE — Code 1 enables the steps_formatter block (not commented out).
+    # It reads Microsoft.VSTS.TCM.Steps (the structured XML test steps field) and calls
+    # steps_formatter() to convert it into a Jira ADF table stored in customfield_10632.
+    # This is relevant for Bug/Test Case work items which carry test steps.
+    # Code 2 comments this out because User Story work items do not have test steps.
     # steps = f.get("Microsoft.VSTS.TCM.Steps", " ")
     # if steps:
     #     try:
@@ -1560,8 +1656,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
-    ado_type = f.get("System.WorkItemType", "Task")
-    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
+    ado_type = f.get("System.WorkItemType", "Story")
+    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Story")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
     tags = f.get("System.Tags", "")
@@ -1604,6 +1700,11 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         except Exception as e:
             log_to_excel(wi_id, None, "Due Date", "Failed", str(e)[:100])
 
+    # CODE 1 DIFFERENCE — Code 1 does NOT map Microsoft.VSTS.Common.Priority using PRIORITY_MAP.
+    # Instead, Code 1 maps priority exclusively from Custom.BugPriority using BUG_PRIORITY_MAP
+    # (P1→Blocker, P2→High, P3→Low, P4→Trivial). This is because Bug work items carry a custom
+    # BugPriority field (P1–P4) while User Story work items use the standard integer Priority field.
+    # Code 2 reads Microsoft.VSTS.Common.Priority (integer 1–4) and maps via PRIORITY_MAP.
     # Priority
     ado_priority_val = f.get("Microsoft.VSTS.Common.Priority")
     try:
@@ -1623,6 +1724,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         log_to_excel(wi_id, None, "Priority", "Skipped", "No priority mapping")
 
     # Acceptance Criteria
+    # CODE 1 DIFFERENCE — Code 1 does NOT map AcceptanceCriteria (customfield_11880).
+    # Bug work items in Code 1 do not use AcceptanceCriteria; it is a User Story field.
     acceptance_criteria = f.get("Microsoft.VSTS.Common.AcceptanceCriteria")
     if acceptance_criteria:
         clean_html_val = clean_html_to_text(acceptance_criteria)
@@ -1656,6 +1759,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Priority Rank", "Failed", str(e)[:100])
 
     # Publish Date
+    # CODE 1 DIFFERENCE — Code 1 does NOT map PublishDate (customfield_12173).
+    # This is a User Story-specific scheduling field not present on Bug work items.
     publish_date_val = f.get("Custom.PublishDate")
     if publish_date_val:
         try:
@@ -1667,6 +1772,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Publish Date", "Failed", str(e)[:100])
 
     # Earliest Effective Date
+    # CODE 1 DIFFERENCE — Code 1 does NOT map EarliestEffectiveDate (customfield_12560).
+    # This is a User Story-specific regulatory/scheduling field absent from Bug work items.
     earliest_effective_date_val = f.get("Custom.EarliestEffectiveDate")
     if earliest_effective_date_val:
         try:
@@ -1678,12 +1785,16 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Earliest Effective Date", "Failed", str(e)[:100])
 
     # Sample Claims Status
+    # CODE 1 DIFFERENCE — Code 1 does NOT map SampleClaimsStatus (customfield_12561).
+    # This is a User Story-specific field not present on Bug work items.
     sample_claims_status = f.get("Custom.SampleClaimsStatus")
     if sample_claims_status:
         fields["customfield_12561"] = {"value": sample_claims_status}
         log_to_excel(wi_id, None, "Sample Claims Status", "Success", sample_claims_status)
 
     # MMS Status
+    # CODE 1 DIFFERENCE — Code 1 does NOT map MMSStatus (customfield_12562).
+    # This is a User Story-specific field not present on Bug work items.
     mms_status = f.get("Custom.MMSStatus")
     if mms_status:
         fields["customfield_12562"] = {"value": mms_status}
@@ -1696,6 +1807,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         log_to_excel(wi_id, None, "Release Notes Status", "Success", release_notes_status)
 
     # Stock Updates
+    # CODE 1 DIFFERENCE — Code 1 does NOT map StockUpdates (customfield_12563).
+    # This is a User Story-specific multi-select field not present on Bug work items.
     stock_updates = f.get("Custom.StockUpdates")
     if stock_updates:
         if ";" in stock_updates:
@@ -1705,6 +1818,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         fields["customfield_12563"] = [{"value": opt} for opt in options]
 
     # Retire Release
+    # CODE 1 DIFFERENCE — Code 1 does NOT map RetireRelease (customfield_12596).
+    # This is a User Story-specific lifecycle field not present on Bug work items.
     retire_release = f.get("Custom.RetireRelease")
     if retire_release:
         fields["customfield_12596"] = {"value": retire_release}
@@ -1746,6 +1861,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         log_to_excel(wi_id, None, "Customer Name", "Success", f"Found {len(parts)} customers")
 
     # Medicaid State
+    # CODE 1 DIFFERENCE — Code 1 does NOT map MedicaidState (customfield_12598).
+    # This is a User Story-specific multi-select field not present on Bug work items.
     medicaid_state = f.get("Custom.MedicaidState")
     if medicaid_state:
         parts = [s.strip().strip('"') for s in medicaid_state.split(";") if s.strip()]
@@ -1766,12 +1883,16 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         log_to_excel(wi_id, None, "Product", "Success", product_val)
 
     # Payment Integrity
+    # CODE 1 DIFFERENCE — Code 1 does NOT map PaymentIntegrity (customfield_12599).
+    # This is a User Story-specific field not present on Bug work items.
     payment_integrity = f.get("Custom.PaymentIntegrity")
     if payment_integrity:
         fields["customfield_12599"] = {"value": payment_integrity}
         log_to_excel(wi_id, None, "Payment Integrity", "Success", payment_integrity)
 
     # Cost Estimate (customfield_12457)
+    # CODE 1 DIFFERENCE — Code 1 does NOT map CostEstimate (customfield_12457).
+    # This is a User Story-specific estimation field not present on Bug work items.
     cost_estimate = f.get("Custom.CostEstimate")
     if cost_estimate:
         try:
@@ -1783,6 +1904,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         log_to_excel(wi_id, None, "Cost Estimate", "Skipped", "No Cost Estimate in ADO")
 
     # Policy Change
+    # CODE 1 DIFFERENCE — Code 1 does NOT map PolicyChange (customfield_12600).
+    # This is a User Story-specific boolean field not present on Bug work items.
     policy_change = f.get("Custom.PolicyChange")
     if policy_change is not None:
         mapped_value = "True" if policy_change else "False"
@@ -1804,10 +1927,52 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         }
 
     # New Data Table
+    # CODE 1 DIFFERENCE — Code 1 does NOT map NewDataTable (customfield_12601).
+    # This is a User Story-specific field not present on Bug work items.
     new_data_table = f.get("Custom.NewDataTable")
     if new_data_table:
         fields["customfield_12601"] = {"value": new_data_table}
         log_to_excel(wi_id, None, "New Data Table", "Success", new_data_table)
+
+    # CODE 1 DIFFERENCE — Code 1 maps the following Bug-specific fields that do NOT appear
+    # anywhere in this file (Code 2), because they only exist on Bug work items:
+    #
+    #   Custom.BugSeverity         → customfield_10090  (select: e.g. "Critical")
+    #   Custom.BugPriority         → priority.name      (via BUG_PRIORITY_MAP: P1→Blocker etc.)
+    #   Microsoft.VSTS.Common.ResolvedReason → resolution.name  (via RESOLUTION_MAP)
+    #   Custom.BugArea             → customfield_11704  (select)
+    #   Custom.BugType             → customfield_11705  (select)
+    #   Custom.FoundbyAutomation   → customfield_11706  (select)
+    #   Custom.BlockingType        → customfield_11699  (select)
+    #   Microsoft.VSTS.Scheduling.OriginalEstimate  → customfield_11718 (float)
+    #   Microsoft.VSTS.Scheduling.RemainingWork     → customfield_11719 (float)
+    #   Microsoft.VSTS.Scheduling.CompletedWork     → customfield_11720 (float)
+    #   Custom.EnvironmentFoundIn  → customfield_11715  (single select, in addition to multi-select 12597)
+    #   Microsoft.VSTS.Build.FoundIn        → customfield_11713 (string)
+    #   Microsoft.VSTS.Build.IntegrationBuild → customfield_11714 (string)
+    #   Custom.BugFailureAnalysis           → customfield_12820 (select)
+    #   Custom.BugUserAnalysisSubcategory   → customfield_12821 (select)
+    #   Custom.QABugUserAnalysisSubcategory → customfield_12822 (select)
+    #   Custom.RelatedUserStorywhereDefectwasIntroduced → customfield_12823 (select)
+    #   Custom.Teamthebugisassociatedwith   → customfield_12824 (select)
+    #   Custom.DeveloperwhoIntroducedDefect → customfield_12825 (string)
+    #   Custom.QAwhooriginallytestedintroducedDefect → customfield_12826 (user picker)
+    #   Custom.ReleasewhereBugwasintroduced → customfield_12859 (select)
+    #   Custom.Whattypeofdefectisit         → customfield_12860 (select)
+    #   Custom.IsthisDefectrelatedtoatestingissue → customfield_12861 (select)
+    #   Custom.QABugUserAnalysisSubcategory → customfield_12862 (select, second mapping)
+    #   Custom.ImpactedorAffectedApplicationbytheBug → customfield_12863 (select)
+    #   Custom.QAwhointroduceddefect        → customfield_12864 (user picker)
+    #   Custom.CYPRESS                      → customfield_12865 (select)
+    #   Custom.TrendNotes                   → customfield_12866 (select)
+    #   Custom.CTMS                         → customfield_12867 (select)
+    #   Custom.QAComment                    → customfield_12868 (ADF doc)
+    #   Custom.CTMSComment                  → customfield_12869 (ADF doc)
+    #   Custom.TrendNotesComment            → customfield_12870 (ADF doc)
+    #   Custom.ImplementationDate           → customfield_11755 (datetime)
+    #   Custom.StatusDropdown               → customfield_11756 (select)
+    #   Custom.CAPAuthor                    → customfield_11758 (user picker)
+    #   Microsoft.VSTS.CMMI.CorrectiveActionPlan → customfield_11757 (ADF doc)
 
     # Risk Rank
     risk_rank_val = f.get("Custom.RiskRank")
@@ -2165,7 +2330,23 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
             flush_text()
             src = node.get("src", "").strip()
             if src:
-                parts.append({"kind": "image", "src": src})
+                if src.startswith("data:"):
+                    # Inline base64 image — decode and save locally
+                    try:
+                        import base64, uuid
+                        header, b64data = src.split(",", 1)
+                        # e.g. "data:image/jpeg;base64"
+                        mime = header.split(":")[1].split(";")[0]  # e.g. "image/jpeg"
+                        ext = mime.split("/")[1]  # e.g. "jpeg"
+                        filename = f"inline_image_{uuid.uuid4().hex[:8]}.{ext}"
+                        local_path = os.path.join(OUTPUT_DIR, filename)
+                        with open(local_path, "wb") as f:
+                            f.write(base64.b64decode(b64data))
+                        parts.append({"kind": "image_local", "path": local_path, "filename": filename})
+                    except Exception as e:
+                        log(f"   ⚠️ Failed to decode base64 image: {e}")
+                else:
+                    parts.append({"kind": "image", "src": src})
             return
         if name == "a":
             href = (node.get("href") or "").strip()
@@ -2182,9 +2363,36 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         if name == "br":
             text_buf.append("\n")
             return
+        # ---- TABLE → render as Jira wiki markup ----
+        if name == "table":
+            flush_text()
+            jira_table_lines = []
+            for tr in node.find_all("tr"):
+                cells = tr.find_all(["td", "th"])
+                if not cells:
+                    continue
+                # Determine if any cell is a <th> or it's the first row → header row
+                is_header = any(c.name == "th" for c in cells)
+                row_parts = []
+                for cell in cells:
+                    cell_text = cell.get_text(separator=" ", strip=True).replace("|", "\\|")
+                    # Bold the text if it's a th
+                    if cell.name == "th" or (cell.find("strong") or cell.find("b")):
+                        cell_text = f"*{cell_text}*" if cell_text else " "
+                    if not cell_text:
+                        cell_text = " "
+                    row_parts.append(cell_text)
+                if is_header:
+                    jira_table_lines.append("||" + "||".join(row_parts) + "||")
+                else:
+                    jira_table_lines.append("|" + "|".join(row_parts) + "|")
+            if jira_table_lines:
+                parts.append({"kind": "text", "value": "\n".join(jira_table_lines)})
+            return
+
         is_block = name in {"p", "div", "li", "ul", "ol",
                              "h1", "h2", "h3", "h4", "h5", "h6",
-                             "blockquote", "table", "tr", "td", "th"}
+                             "blockquote"}
         if is_block:
             flush_text()
             for child in node.children if hasattr(node, 'children') else []:
@@ -2194,12 +2402,36 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         for child in node.children if hasattr(node, 'children') else []:
             walk(child)
 
+
     for top in soup.contents:
         walk(top)
     flush_text()
     return parts
 
 
+# CODE 1 DIFFERENCE — Code 1 replaces _parse_comment_markdown with a much more capable
+# _parse_comment_markdown_improved function. Key additions in Code 1:
+#
+#   1. Calls _fix_ado_malformed_markdown_links(text) FIRST, which:
+#        - Calls html.unescape() to decode HTML entities (including emoji) in the raw text
+#        - Fixes "angle-bracket triple-link" pattern that ADO emits for URLs:
+#            <[https://url>](https://url> "title")  →  [https://url](https://url)
+#        - Fixes title-escaped links: [text](url "title")  →  [text](url)
+#
+#   2. Extracts inline images (![alt](url)) from the markdown text separately, preserving
+#      their exact document position. Images are returned as {"kind": "image"} parts that
+#      get downloaded from ADO and uploaded to Jira in process_comment_and_post().
+#      Code 2's _parse_comment_markdown returns a single flat text part with no image extraction.
+#
+#   3. After image extraction, passes non-image text segments through _resolve_markdown_mentions
+#      AND _convert_markdown_to_jira_wiki (the full version with headings/tables/lists/links).
+#
+#   4. Calls _deduplicate_links_in_parts(parts) after parsing to remove duplicate Jira-wiki
+#      [text|url] links that ADO sometimes emits multiple times for the same URL.
+#
+# Code 2's _parse_comment_markdown does none of the above: it only resolves mentions and
+# applies the two-regex bold/italic conversion, with no image extraction, no link fixing,
+# and no deduplication.
 def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
     if not text:
         return []
@@ -2212,6 +2444,27 @@ def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict
     return []
 
 
+# CODE 1 DIFFERENCE — Code 1 has a more sophisticated process_comment_and_post that
+# uses a separate detect_comment_format() helper function instead of the inline format
+# detection logic used here. detect_comment_format() adds two extra heuristic checks:
+#
+#   1. _looks_like_block_html(raw_text): checks whether the raw 'text' field itself contains
+#      block-level HTML tags (<div>, <img>, <br>, <p>, <table>, etc.). If so, it overrides
+#      the format to "html" even when ADO reports format="markdown" or format="text".
+#      This handles a known ADO quirk where the text field stores raw HTML but the format
+#      field is wrong. Without this, the markdown parser receives raw HTML as literal text
+#      and passes angle-brackets and tags through to the Jira comment unchanged.
+#
+#   2. It also checks rendered_text first — if rendered_text looks like HTML, it always
+#      routes to the HTML parser to avoid duplicate links from the markdown pipeline.
+#
+# Code 2's inline detection only checks comment.get("format") and a simple HTML tag regex
+# on rendered_text/raw_text, and can misroute ADO comments that have format="markdown"
+# but contain raw HTML in the text field.
+#
+# Code 1 also uses build_comment_body_with_images() to assemble the final body,
+# which applies re.sub(r'\n{3,}', '\n\n', txt) to normalise excessive blank lines
+# inside each text part before joining — Code 2 does this only at the very end.
 def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_index: int = 0,
                               author: str = "Unknown", created_str: str = ""):
     meta_line = f"*Originally commented by {author} on {created_str}*"
@@ -2256,7 +2509,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
         update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (no parseable content)")
         return
 
-    has_images = any(p["kind"] == "image" for p in parts)
+    has_images = any(p["kind"] in ("image", "image_local") for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
     log(f"   💬 Comment[{comment_index}]: {len(parts)} parts | images={sum(1 for p in parts if p['kind'] == 'image')} | text={has_text}")
@@ -2274,28 +2527,39 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     img_fail_count = 0
 
     for p in parts:
-        if p["kind"] != "image":
+        if p["kind"] not in ("image", "image_local"):
             continue
-        src = p["src"]
-        if src in image_url_map:
+        
+        if p["kind"] == "image_local":
+            local_file = p["path"]
+            src_key = p["path"]  # use path as the dedup key
+        else:
+            src = p["src"]
+            src_key = src
+            if src_key in image_url_map:
+                continue
+            filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
+            local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+        
+        if src_key in image_url_map:
             continue
-        filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
-        local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+            
         if not local_file:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
             continue
+            
         upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
         if upload_info and upload_info.get("content"):
-            image_url_map[src] = upload_info["content"]
+            image_url_map[src_key] = upload_info["content"]
             img_upload_count += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
-            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
             img_upload_count += 1
         else:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
 
     body_parts: List[str] = [meta_line]
     for p in parts:
@@ -2303,8 +2567,9 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
             txt = p["value"].strip()
             if txt:
                 body_parts.append(txt)
-        elif p["kind"] == "image":
-            jira_url = image_url_map.get(p["src"])
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
             if jira_url:
                 body_parts.append(f"!{jira_url}!")
             else:
@@ -2462,6 +2727,10 @@ def migrate_all():
     else:
         mapping = {}
 
+    # CODE 1 DIFFERENCE — Code 1 queries for WorkItemType = 'Bug' and targets a date range
+    # of 2026-02-21 to 2026-02-28 as a batch migration scope.
+    # Code 2 queries for WorkItemType = 'User Story' over the same date range.
+    # Both files are single-project migration scripts targeting different work item types.
     wiql = (
         "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-02-21' "
         "AND [System.CreatedDate] <= '2026-02-28' AND [System.WorkItemType] = 'User Story'"
@@ -2473,7 +2742,10 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = None
+    # CODE 1 DIFFERENCE — Code 1 sets SPECIFIC_ID = ["845200"] to target a single work item
+    # for a focused test/debug run. Code 2 sets SPECIFIC_ID = None to process all found IDs.
+    # Code 1 also sets MAX_TO_PROCESS = 1000 while Code 2 uses 10000.
+    SPECIFIC_ID = ["490341"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2512,6 +2784,28 @@ def migrate_all():
                 create_links_from_ado(wi, issue_key, wi_id=wi_id)
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Create Links", "Error", str(e)[:100])
+
+            # CODE 1 DIFFERENCE — Code 1 runs steps 3 (ReproSteps) and 4 (TCM Steps) fully,
+            # whereas Code 2 comments both sections out. Reasons:
+            #
+            # Step 3 (ReproSteps / customfield_12494):
+            #   Bug work items carry Microsoft.VSTS.TCM.ReproSteps (HTML), which Code 1 processes:
+            #     a) Calls fix_relative_urls_in_repro_steps() to convert /HESource/ relative URLs
+            #        to absolute https://dev.azure.com URLs before any further processing.
+            #     b) Calls download_and_upload_reprosteps_images() to download images from ADO
+            #        and upload them to Jira, building an attachment_map of {src → jira_id}.
+            #     c) Waits 2 seconds (time.sleep(2)) for Jira attachment processing.
+            #     d) Verifies each uploaded attachment via GET /rest/api/3/attachment/{id}.
+            #     e) Calls convert_ado_reprosteps_to_jira_adf() with the verified_map to produce
+            #        a full ADF document preserving tables, lists, images, and code blocks.
+            #     f) PUTs the ADF to customfield_12494 on the Jira issue.
+            #   User Story work items do not have ReproSteps, so Code 2 skips this entirely.
+            #
+            # Step 4 (TCM Steps / customfield_10632):
+            #   Bug work items carry Microsoft.VSTS.TCM.Steps (structured XML), which Code 1 converts
+            #   into a Jira ADF table (Steps / Action / Expected result / Attachments columns) via
+            #   steps_formatter() and PUTs to customfield_10632.
+            #   User Story work items do not have TCM Steps, so Code 2 skips this entirely.
 
             # # 3) ReproSteps
             # repro_steps_html = wi.get("fields", {}).get("Microsoft.VSTS.TCM.ReproSteps", "")
