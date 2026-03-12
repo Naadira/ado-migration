@@ -784,67 +784,471 @@ def _extract_cell_content(cell: Tag) -> List[Dict]:
 
 def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=None) -> dict:
     """
-    Enhanced version that properly handles HTML tables in descriptions.
-    Preserves table structure, rows, columns, and all formatting.
-    Falls back to normal processing for non-table content.
+    Enhanced description processor that walks the full DOM in document order,
+    preserving ALL content: paragraphs, divs, bold/italic text, inline spans,
+    tables, code blocks (monospace spans), images, and links.
+
+    Previously only tables were emitted — all surrounding text was silently dropped.
+    This version processes every node in the order it appears in the HTML.
     """
     if not raw_html or not raw_html.strip():
         return {"type": "doc", "version": 1, "content": []}
 
     soup = BeautifulSoup(raw_html, "html.parser")
-    tables = soup.find_all("table")
 
-    if not tables:
-        # No tables - use original processing
+    # If there are no tables at all, delegate to the original processor
+    if not soup.find("table"):
         return process_description_to_adf(issue_key, raw_html, wi_id=wi_id)
 
-    # Process with table support
     adf_content = []
+    # Buffer for inline text nodes that haven't been flushed into a paragraph yet
+    inline_buf: List[Dict] = []
 
-    for table_elem in tables:
+    def flush_inline():
+        """Flush any accumulated inline nodes as a paragraph block."""
+        if inline_buf:
+            adf_content.append({"type": "paragraph", "content": inline_buf.copy()})
+            inline_buf.clear()
+
+    def make_inline_nodes(element) -> List[Dict]:
+        """
+        Recursively extract inline ADF nodes from an element.
+        Handles: text, <b>/<strong>, <i>/<em>, <u>, <a>, <br>, <span>, <code>.
+        """
+        nodes = []
+        for child in element.children:
+            if isinstance(child, NavigableString):
+                text = html.unescape(str(child)).replace("\xa0", " ")
+                if text.strip() or text == " ":
+                    nodes.append({"type": "text", "text": text})
+            elif isinstance(child, Tag):
+                name = (child.name or "").lower()
+                if name == "br":
+                    nodes.append({"type": "hardBreak"})
+                elif name in ("b", "strong"):
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "strong"}]})
+                elif name in ("i", "em"):
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "em"}]})
+                elif name == "u":
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "underline"}]})
+                elif name == "code":
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "code"}]})
+                elif name == "a":
+                    href = (child.get("href") or "").strip()
+                    label = child.get_text(strip=True) or href
+                    if href:
+                        nodes.append({"type": "text", "text": label,
+                                      "marks": [{"type": "link", "attrs": {"href": href}}]})
+                    elif label:
+                        nodes.append({"type": "text", "text": label})
+                elif name == "span":
+                    # Detect monospace/code-style spans (stack traces etc.)
+                    style = (child.get("style") or "").lower()
+                    is_mono = any(k in style for k in ("monospace", "courier", "consolas", "font-family:consolas"))
+                    if is_mono:
+                        raw = child.get_text().replace("\xa0", " ").strip()
+                        if raw:
+                            # Emit as a code block — flush inline first
+                            nodes_copy = nodes.copy()
+                            nodes.clear()
+                            # Return what we have so far, let caller flush, then add code block
+                            # We use a sentinel to signal a block-level code node
+                            nodes.extend(nodes_copy)
+                            nodes.append({"__block__": "codeBlock", "text": raw})
+                    else:
+                        nodes.extend(make_inline_nodes(child))
+                elif name == "img":
+                    src = (child.get("src") or "").strip()
+                    if src and ATTACH_URL_SUBSTR in src:
+                        local_file = download_images_to_ado_attachments(
+                            src, wi_id=wi_id, issue_key=issue_key)
+                        if local_file:
+                            upload = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+                            if upload and upload.get("id"):
+                                nodes.append({"__block__": "mediaSingle",
+                                              "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload['id']}"})
+                    elif src:
+                        nodes.append({"type": "text", "text": src,
+                                      "marks": [{"type": "link", "attrs": {"href": src}}]})
+                else:
+                    nodes.extend(make_inline_nodes(child))
+        return nodes
+
+    def _is_mono_span(node) -> bool:
+        """True if this node is a monospace/code-style span or pre element."""
+        if not isinstance(node, Tag):
+            return False
+        name = (node.name or "").lower()
+        if name == "pre":
+            return True
+        if name == "span":
+            style = (node.get("style") or "").lower()
+            return any(k in style for k in ("monospace", "courier", "consolas"))
+        return False
+
+    def process_table(table_elem) -> Dict:
+        """Convert an HTML table element to an ADF table node.
+        Skips rows and columns that are entirely empty (caused by ADO rowspan/colspan markup).
+        """
         table_rows = []
 
-        for tr in table_elem.find_all("tr"):
+        # First pass: collect all rows with their real cell count
+        all_rows = table_elem.find_all("tr")
+
+        # Track which column indices have ANY content across all rows
+        # so we can drop entirely-empty columns too
+        col_has_content = {}
+
+        raw_rows = []
+        for tr in all_rows:
+            tds = tr.find_all(["td", "th"])
+            row_data = []
+            for col_idx, td in enumerate(tds):
+                text = td.get_text(separator=" ", strip=True)
+                # Also check for images
+                has_img = bool(td.find("img"))
+                has_content = bool(text) or has_img
+                row_data.append((td, has_content))
+                if has_content:
+                    col_has_content[col_idx] = True
+            raw_rows.append(row_data)
+
+        # Identify columns that have content in at least one row
+        # (This handles phantom extra columns from colspan/rowspan)
+        max_cols = max((len(r) for r in raw_rows), default=0)
+        # A column is "real" if it has content anywhere OR if it's the only column
+        real_col_indices = {i for i in range(max_cols) if col_has_content.get(i, False)}
+        # If NO columns have content at all, keep all (edge case)
+        if not real_col_indices:
+            real_col_indices = set(range(max_cols))
+
+        for tr, row_data in zip(all_rows, raw_rows):
+            # Skip rows where ALL cells are empty
+            if not any(has_content for _, has_content in row_data):
+                continue
+
+            is_header_row = bool(tr.find("th"))
             row_cells = []
-            is_header = bool(tr.find("th"))
 
-            for td in tr.find_all(["td", "th"]):
-                cell_type = "header" if td.name == "th" or is_header else "data"
+            for col_idx, (td, has_content) in enumerate(row_data):
+                # Skip columns that are empty everywhere
+                if col_idx not in real_col_indices:
+                    continue
+
+                cell_type = "tableHeader" if (td.name == "th" or is_header_row) else "tableCell"
                 cell_content = _extract_cell_content(td)
-
-                table_cell = {
-                    "type": "tableHeader" if cell_type == "header" else "tableCell",
-                    "content": [{
-                        "type": "paragraph",
-                        "content": cell_content
-                    }]
-                }
-                row_cells.append(table_cell)
-
-            if row_cells:
-                table_rows.append({
-                    "type": "tableRow",
-                    "content": row_cells
+                row_cells.append({
+                    "type": cell_type,
+                    "content": [{"type": "paragraph", "content": cell_content}]
                 })
 
+            if row_cells:
+                table_rows.append({"type": "tableRow", "content": row_cells})
+
         if table_rows:
-            adf_content.append({
+            return {
                 "type": "table",
-                "attrs": {
-                    "isNumberColumnEnabled": False,
-                    "layout": "default"
-                },
+                "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
                 "content": table_rows
-            })
+            }
+        return None
+        
+    def walk(node):
+        """Walk a DOM node and emit ADF block nodes into adf_content."""
+        if isinstance(node, NavigableString):
+            text = html.unescape(str(node)).replace("\xa0", " ")
+            if text.strip():
+                inline_buf.append({"type": "text", "text": text})
+            return
+
+        if not isinstance(node, Tag):
+            return
+
+        name = (node.name or "").lower()
+
+        # ---- TABLE — flush inline buffer first, then emit table block ----
+        if name == "table":
+            flush_inline()
+            tbl = process_table(node)
+            if tbl:
+                adf_content.append(tbl)
+            return
+
+        # ---- PRE / monospace SPAN — code block ----
+        if _is_mono_span(node):
+            flush_inline()
+            raw = node.get_text().replace("\xa0", " ").strip()
+            if raw:
+                adf_content.append({
+                    "type": "codeBlock",
+                    "attrs": {"language": ""},
+                    "content": [{"type": "text", "text": raw}]
+                })
+            return
+
+        # ---- IMG — flush then emit mediaSingle ----
+        if name == "img":
+            src = (node.get("src") or "").strip()
+            if src and ATTACH_URL_SUBSTR in src:
+                flush_inline()
+                local_file = download_images_to_ado_attachments(
+                    src, wi_id=wi_id, issue_key=issue_key)
+                if local_file:
+                    upload = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+                    if upload and upload.get("id"):
+                        adf_content.append({
+                            "type": "mediaSingle",
+                            "content": [{"type": "media", "attrs": {
+                                "type": "external",
+                                "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload['id']}",
+                                "width": 710, "height": 163
+                            }}]
+                        })
+            elif src:
+                inline_buf.append({"type": "text", "text": src,
+                                   "marks": [{"type": "link", "attrs": {"href": src}}]})
+            return
+
+        # ---- BR — inline line break ----
+        if name == "br":
+            inline_buf.append({"type": "hardBreak"})
+            return
+
+        # ---- Inline formatting tags — accumulate into buffer ----
+        if name in ("b", "strong"):
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "strong"}]})
+            else:
+                # Has non-text children (e.g. <img>) — recurse so they aren't dropped
+                for child in node.children:
+                    walk(child)
+            return
+
+        if name in ("i", "em"):
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "em"}]})
+            else:
+                for child in node.children:
+                    walk(child)
+            return
+
+        if name == "u":
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "underline"}]})
+            else:
+                for child in node.children:
+                    walk(child)
+            return
+
+        if name == "a":
+            href = (node.get("href") or "").strip()
+            label = node.get_text(strip=True) or href
+            if href:
+                inline_buf.append({"type": "text", "text": label,
+                                   "marks": [{"type": "link", "attrs": {"href": href}}]})
+            elif label:
+                inline_buf.append({"type": "text", "text": label})
+            return
+
+        if name == "span":
+            style = (node.get("style") or "").lower()
+            is_mono = any(k in style for k in ("monospace", "courier", "consolas"))
+            if is_mono:
+                flush_inline()
+                raw = node.get_text().replace("\xa0", " ").strip()
+                if raw:
+                    adf_content.append({
+                        "type": "codeBlock",
+                        "attrs": {"language": ""},
+                        "content": [{"type": "text", "text": raw}]
+                    })
+                return
+            # Regular span — recurse into children
+            for child in node.children:
+                walk(child)
+            return
+
+        # ---- Block tags: P, DIV, H1-H6, BLOCKQUOTE, SECTION ----
+        if name in ("p", "blockquote", "section", "article"):
+            flush_inline()
+            local_inline: List[Dict] = []
+            for child in node.children:
+                if isinstance(child, NavigableString):
+                    text = html.unescape(str(child)).replace("\xa0", " ")
+                    if text.strip() or text == " ":
+                        local_inline.append({"type": "text", "text": text})
+                elif isinstance(child, Tag):
+                    cname = (child.name or "").lower()
+                    if cname == "br":
+                        local_inline.append({"type": "hardBreak"})
+                    elif cname in ("b", "strong"):
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t,
+                                                 "marks": [{"type": "strong"}]})
+                    elif cname in ("i", "em"):
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t,
+                                                 "marks": [{"type": "em"}]})
+                    elif cname == "u":
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t,
+                                                 "marks": [{"type": "underline"}]})
+                    elif cname == "a":
+                        href = (child.get("href") or "").strip()
+                        label = child.get_text(strip=True) or href
+                        if href:
+                            local_inline.append({"type": "text", "text": label,
+                                                 "marks": [{"type": "link", "attrs": {"href": href}}]})
+                        elif label:
+                            local_inline.append({"type": "text", "text": label})
+                    elif cname == "span":
+                        style = (child.get("style") or "").lower()
+                        is_mono = any(k in style for k in ("monospace", "courier", "consolas"))
+                        if is_mono:
+                            # Flush paragraph so far, emit code block, continue
+                            if local_inline:
+                                adf_content.append({"type": "paragraph", "content": local_inline.copy()})
+                                local_inline.clear()
+                            raw = child.get_text().replace("\xa0", " ").strip()
+                            if raw:
+                                adf_content.append({
+                                    "type": "codeBlock",
+                                    "attrs": {"language": ""},
+                                    "content": [{"type": "text", "text": raw}]
+                                })
+                        else:
+                            t = child.get_text()
+                            if t.strip():
+                                local_inline.append({"type": "text", "text": t})
+                    elif cname == "img":
+                        src = (child.get("src") or "").strip()
+                        if local_inline:
+                            adf_content.append({"type": "paragraph", "content": local_inline.copy()})
+                            local_inline.clear()
+                        if src and ATTACH_URL_SUBSTR in src:
+                            lf = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+                            if lf:
+                                up = jira_upload_attachment(issue_key, lf, wi_id=wi_id)
+                                if up and up.get("id"):
+                                    adf_content.append({
+                                        "type": "mediaSingle",
+                                        "content": [{"type": "media", "attrs": {
+                                            "type": "external",
+                                            "url": f"{JIRA_URL}/rest/api/2/attachment/content/{up['id']}",
+                                            "width": 710, "height": 163
+                                        }}]
+                                    })
+                        elif src:
+                            local_inline.append({"type": "text", "text": src,
+                                                 "marks": [{"type": "link", "attrs": {"href": src}}]})
+                    else:
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t})
+            if local_inline:
+                adf_content.append({"type": "paragraph", "content": local_inline})
+            return
+
+        if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            flush_inline()
+            level = int(name[1])
+            text = node.get_text(strip=True)
+            if text:
+                adf_content.append({
+                    "type": "heading",
+                    "attrs": {"level": level},
+                    "content": [{"type": "text", "text": text}]
+                })
+            return
+
+        if name in ("ul", "ol"):
+            flush_inline()
+            list_type = "bulletList" if name == "ul" else "orderedList"
+            items = []
+            for li in node.find_all("li", recursive=False):
+                t = li.get_text(strip=True)
+                if t:
+                    items.append({
+                        "type": "listItem",
+                        "content": [{"type": "paragraph",
+                                     "content": [{"type": "text", "text": t}]}]
+                    })
+            if items:
+                adf_content.append({"type": list_type, "content": items})
+            return
+
+        # ---- DIV — recurse into children (divs are generic containers) ----
+        if name == "div":
+            # Check if the div itself is a code-style block
+            style = (node.get("style") or "").lower()
+            is_mono = any(k in style for k in ("monospace", "courier", "consolas"))
+            if is_mono:
+                flush_inline()
+                raw = node.get_text().replace("\xa0", " ").strip()
+                if raw:
+                    adf_content.append({
+                        "type": "codeBlock",
+                        "attrs": {"language": ""},
+                        "content": [{"type": "text", "text": raw}]
+                    })
+                return
+            flush_inline()
+            for child in node.children:
+                walk(child)
+            flush_inline()
+            return
+
+        # ---- Everything else — recurse ----
+        for child in node.children:
+            walk(child)
+
+    # Walk all top-level nodes
+    for top in soup.contents:
+        walk(top)
+
+    # Flush any remaining inline content
+    flush_inline()
 
     if not adf_content:
         adf_content = [{"type": "paragraph", "content": []}]
 
-    return {
-        "type": "doc",
-        "version": 1,
-        "content": adf_content
-    }
+    return {"type": "doc", "version": 1, "content": adf_content}
 
 # ============================================================================
 # END OF TABLE CONVERSION FUNCTIONS
@@ -1337,8 +1741,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
-    ado_type = f.get("System.WorkItemType", "Task")
-    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
+    ado_type = f.get("System.WorkItemType", "Bug")
+    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Bug")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
     tags = f.get("System.Tags", "")
@@ -2103,9 +2507,23 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         name = node.name.lower() if node.name else ""
         if name == "img":
             flush_text()
-            src = node.get("src", "").strip()
+            src = (node.get("src") or "").strip()
             if src:
-                parts.append({"kind": "image", "src": src})
+                if src.startswith("data:"):
+                    try:
+                        import base64, uuid
+                        header, b64data = src.split(",", 1)
+                        mime = header.split(":")[1].split(";")[0]
+                        ext = mime.split("/")[1]
+                        filename = f"inline_image_{uuid.uuid4().hex[:8]}.{ext}"
+                        local_path = os.path.join(OUTPUT_DIR, filename)
+                        with open(local_path, "wb") as f:
+                            f.write(base64.b64decode(b64data))
+                        parts.append({"kind": "image_local", "path": local_path, "filename": filename})
+                    except Exception as e:
+                        log(f"   ⚠️ Failed to decode base64 image: {e}")
+                else:
+                    parts.append({"kind": "image", "src": src})
             return
         if name == "a":
             href = (node.get("href") or "").strip()
@@ -2122,9 +2540,36 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         if name == "br":
             text_buf.append("\n")
             return
+        # ---- TABLE → render as Jira wiki markup ----
+        if name == "table":
+            flush_text()
+            jira_table_lines = []
+            for tr in node.find_all("tr"):
+                cells = tr.find_all(["td", "th"])
+                if not cells:
+                    continue
+                # Determine if any cell is a <th> or it's the first row → header row
+                is_header = any(c.name == "th" for c in cells)
+                row_parts = []
+                for cell in cells:
+                    cell_text = cell.get_text(separator=" ", strip=True).replace("|", "\\|")
+                    # Bold the text if it's a th
+                    if cell.name == "th" or (cell.find("strong") or cell.find("b")):
+                        cell_text = f"*{cell_text}*" if cell_text else " "
+                    if not cell_text:
+                        cell_text = " "
+                    row_parts.append(cell_text)
+                if is_header:
+                    jira_table_lines.append("||" + "||".join(row_parts) + "||")
+                else:
+                    jira_table_lines.append("|" + "|".join(row_parts) + "|")
+            if jira_table_lines:
+                parts.append({"kind": "text", "value": "\n".join(jira_table_lines)})
+            return
+
         is_block = name in {"p", "div", "li", "ul", "ol",
                              "h1", "h2", "h3", "h4", "h5", "h6",
-                             "blockquote", "table", "tr", "td", "th"}
+                             "blockquote"}
         if is_block:
             flush_text()
             for child in node.children if hasattr(node, 'children') else []:
@@ -2340,12 +2785,13 @@ def build_comment_body_with_images(parts: List[Dict], image_url_map: Dict[str, s
             if txt:
                 txt = re.sub(r'\n{3,}', '\n\n', txt)
                 body_parts.append(txt)
-        elif p["kind"] == "image":
-            jira_url = image_url_map.get(p["src"])
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
             if jira_url:
                 body_parts.append(f"!{jira_url}!")
             else:
-                body_parts.append(f"[Image failed to load: {p['src'][:60]}...]")
+                body_parts.append(f"[Image failed to load]")
 
     return "\n\n".join(body_parts).strip()
 
@@ -2389,7 +2835,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
         update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (no content)")
         return
 
-    has_images = any(p["kind"] == "image" for p in parts)
+    has_images = any(p["kind"] in ("image", "image_local") for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
     log(f"   📝 Comment[{comment_index}]: {len(parts)} parts | text={has_text} | images={sum(1 for p in parts if p['kind'] == 'image')}")
@@ -2409,45 +2855,50 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     img_fail_count = 0
 
     for p in parts:
-        if p["kind"] != "image":
+        if p["kind"] not in ("image", "image_local"):
             continue
 
-        src = p["src"]
-        if src in image_url_map:
+        if p["kind"] == "image_local":
+            src_key = p["path"]
+            local_file = p["path"]
+            filename = p["filename"]
+        else:
+            src_key = p["src"]
+            if src_key in image_url_map:
+                continue
+            parsed_url = urlparse(src_key)
+            query = parse_qs(parsed_url.query or "")
+            filename = query.get("fileName", [f"image_{comment_index}.png"])[0]
+            log(f"   📥 Downloading image: {filename}")
+            local_file = download_images_to_ado_attachments(src_key)
+
+        if src_key in image_url_map:
             continue
-
-        parsed_url = urlparse(src)
-        query = parse_qs(parsed_url.query or "")
-        filename = query.get("fileName", [f"image_{comment_index}.png"])[0]
-
-        log(f"   📥 Downloading image: {filename}")
-        local_file = ado_download_attachment(src, filename, wi_id=wi_id, issue_key=issue_key)
 
         if not local_file:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
             continue
 
         log(f"   📤 Uploading image to Jira: {filename}")
-        upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+        upload_info = jira_upload_attachment(issue_key, local_file)
 
         if upload_info and upload_info.get("content"):
-            image_url_map[src] = upload_info["content"]
+            image_url_map[src_key] = upload_info["content"]
             img_upload_count += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
-            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
             img_upload_count += 1
         else:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
 
         try:
             if os.path.exists(local_file):
                 os.remove(local_file)
         except Exception:
             pass
-
     # Build and post final comment body with images interleaved
     final_body = build_comment_body_with_images(parts, image_url_map, meta_line, issue_key)
 
@@ -2614,7 +3065,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["845200"]
+    SPECIFIC_ID = ["832241"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
