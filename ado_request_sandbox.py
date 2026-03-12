@@ -36,6 +36,17 @@ JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY")
 Email = os.getenv("EMAIL")
 JIRA_ACCOUNT_ID = os.getenv("JIRA_ACCOUNT_ID")
 
+# CODE 1 NOTE: WORKITEM_TYPE_MAP in Code 1 contains a full mapping of all ADO work item types:
+# {
+#     "Bug": "Bug", "Defect": "Defect", "Epic": "Epic", "Feature": "Feature",
+#     "Hotfix": "Hotfix", "Issue": "Issue", "Joes Test": "Joes Test",
+#     "Portfolio Epic": "Portfolio Epic", "Post Lockdown": "Post Lockdown",
+#     "Request": "Request", "RIDA (disabled)": "RIDA (disabled)",
+#     "Risk (disabled)": "Risk (disabled)", "Task": "Task",
+#     "Test Case": "Epic",  # Note: Test Case maps to Epic in Code 1
+#     "Test Plan": "Test Plan", "Test Suite": "Test Suite", "User Story": "User Story"
+# }
+# Code 2 only maps: {"Request": "Request"} — scoped to Request migration only.
 WORKITEM_TYPE_MAP = {
     "Request": "Request",
     
@@ -59,6 +70,14 @@ RESOLUTION_MAP = {
     "Will not Fix": "Won't Do"
 }
 
+# CODE 1 NOTE: STATE_MAP in Code 1 uses Bug/general workflow states:
+# {
+#     "New": "New", "Under Investigation": "In Refinement", "Ready": "Ready",
+#     "In Development": "In Progress", "Development Complete": "Review",
+#     "In Test": "Testing", "Test Complete": "Ready to Release",
+#     "Closed": "Done", "Removed": "Cancelled", "Waiting for customer": "Waiting for customer"
+# }
+# Code 2 uses Request-specific workflow states below.
 STATE_MAP = {
     "New": "New",
     "Denied": "Cancelled",
@@ -373,6 +392,12 @@ _MARKDOWN_MENTION_RE = re.compile(
 )
 
 
+# CODE 1 NOTE: _resolve_markdown_mentions in Code 1 also calls html.unescape() on the
+# entire text before processing mentions, to handle HTML entities (e.g. &quot; → ")
+# and emoji sequences that may appear in markdown comment text:
+#   import html as html_lib
+#   text = html_lib.unescape(text)
+# Code 2 skips this unescape step — add it here if markdown comments contain raw HTML entities.
 def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
     guid_map = _get_ado_guid_map()
 
@@ -397,6 +422,27 @@ def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
     return _MARKDOWN_MENTION_RE.sub(replace_mention, text)
 
 
+# CODE 1 NOTE: _convert_markdown_to_jira_wiki in Code 1 is a much more comprehensive
+# implementation (~100 lines) that handles:
+#   - ATX headings:           ### Heading  →  h3. Heading
+#   - GFM pipe tables:        | col |      →  Jira || col ||
+#   - Unordered lists:        * item / - item  →  * item  (Jira wiki bullet)
+#   - Ordered lists:          1. item      →  # item
+#   - Bold+italic:            ***text***   →  *_text_*
+#   - Bold:                   **text**     →  *text*  (via sentinel placeholders to avoid
+#                                              italic regex re-consuming them)
+#   - Italic:                 *text*       →  _text_
+#   - Inline code:            `code`       →  {{code}}
+#   - Markdown links:         [text](url)  →  [text|url]
+#   - Angle-bracket URLs:     <https://..> →  [https://...]
+#   - It also uses a helper _inline_md_to_jira() for per-line inline conversions.
+#
+# Code 2 only handles bold and italic:
+#   text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)   # bold
+#   text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)  # italic
+#
+# If richer markdown formatting (headings, tables, lists, code, links) is needed in
+# Request comments, replace this function with the full implementation from Code 1.
 def _convert_markdown_to_jira_wiki(text: str) -> str:
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
     text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)
@@ -751,20 +797,64 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
         return False
 
     def process_table(table_elem) -> Dict:
-        """Convert an HTML table element to an ADF table node."""
+        """Convert an HTML table element to an ADF table node.
+        Skips rows and columns that are entirely empty (caused by ADO rowspan/colspan markup).
+        """
         table_rows = []
-        for tr in table_elem.find_all("tr"):
-            row_cells = []
+
+        # First pass: collect all rows with their real cell count
+        all_rows = table_elem.find_all("tr")
+
+        # Track which column indices have ANY content across all rows
+        # so we can drop entirely-empty columns too
+        col_has_content = {}
+
+        raw_rows = []
+        for tr in all_rows:
+            tds = tr.find_all(["td", "th"])
+            row_data = []
+            for col_idx, td in enumerate(tds):
+                text = td.get_text(separator=" ", strip=True)
+                # Also check for images
+                has_img = bool(td.find("img"))
+                has_content = bool(text) or has_img
+                row_data.append((td, has_content))
+                if has_content:
+                    col_has_content[col_idx] = True
+            raw_rows.append(row_data)
+
+        # Identify columns that have content in at least one row
+        # (This handles phantom extra columns from colspan/rowspan)
+        max_cols = max((len(r) for r in raw_rows), default=0)
+        # A column is "real" if it has content anywhere OR if it's the only column
+        real_col_indices = {i for i in range(max_cols) if col_has_content.get(i, False)}
+        # If NO columns have content at all, keep all (edge case)
+        if not real_col_indices:
+            real_col_indices = set(range(max_cols))
+
+        for tr, row_data in zip(all_rows, raw_rows):
+            # Skip rows where ALL cells are empty
+            if not any(has_content for _, has_content in row_data):
+                continue
+
             is_header_row = bool(tr.find("th"))
-            for td in tr.find_all(["td", "th"]):
+            row_cells = []
+
+            for col_idx, (td, has_content) in enumerate(row_data):
+                # Skip columns that are empty everywhere
+                if col_idx not in real_col_indices:
+                    continue
+
                 cell_type = "tableHeader" if (td.name == "th" or is_header_row) else "tableCell"
                 cell_content = _extract_cell_content(td)
                 row_cells.append({
                     "type": cell_type,
                     "content": [{"type": "paragraph", "content": cell_content}]
                 })
+
             if row_cells:
                 table_rows.append({"type": "tableRow", "content": row_cells})
+
         if table_rows:
             return {
                 "type": "table",
@@ -836,24 +926,49 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
 
         # ---- Inline formatting tags — accumulate into buffer ----
         if name in ("b", "strong"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "strong"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "strong"}]})
+            else:
+                # Has non-text children (e.g. <img>) — recurse so they aren't dropped
+                for child in node.children:
+                    walk(child)
             return
 
         if name in ("i", "em"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "em"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "em"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "u":
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "underline"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "underline"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "a":
@@ -1488,11 +1603,32 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
     return {"type": "doc", "version": 1, "content": doc_content}
 
 
+# CODE 1 NOTE: fix_relative_urls_in_repro_steps is a function present in Code 1 but
+# absent from Code 2. It converts relative ADO image/href URLs in ReproSteps HTML to
+# absolute URLs before processing, e.g.:
+#   src="/HESource/..." → src="https://dev.azure.com/HESource/..."
+# It is used in Code 1's migrate_all() just before download_and_upload_reprosteps_images().
+# Since Code 2 has ReproSteps processing commented out, this function was not included.
+# If ReproSteps processing is re-enabled for Requests, add this function and call it the
+# same way Code 1 does:
+#
+#   def fix_relative_urls_in_repro_steps(repro_html: str) -> str:
+#       if not repro_html:
+#           return repro_html
+#       pattern = r'((?:src|href)=")(/HESource/[^"]*)'
+#       def replace_url(match):
+#           return match.group(1) + "https://dev.azure.com" + match.group(2)
+#       return re.sub(pattern, replace_url, repro_html)
+
+
 def build_jira_fields_from_ado(wi: Dict) -> Dict:
     global steps_payload
     steps_payload = None
     f = wi.get("fields", {})
     wi_id = wi.get("id")
+    # CODE 1 NOTE: Code 1 parses TCM steps here (Microsoft.VSTS.TCM.Steps) via steps_formatter()
+    # and logs the result. This block is commented out in Code 2 because Requests do not
+    # have test steps. If this work item type gains steps support, uncomment:
     # steps = f.get("Microsoft.VSTS.TCM.Steps", " ")
     # if steps:
     #     try:
@@ -1503,8 +1639,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
-    ado_type = f.get("System.WorkItemType", "Task")
-    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
+    ado_type = f.get("System.WorkItemType", "Request")
+    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Request")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
     
     tags = f.get("System.Tags", "")
@@ -1547,6 +1683,10 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         except Exception as e:
             log_to_excel(wi_id, None, "Due Date", "Failed", str(e)[:100])
 
+    # CODE 1 NOTE: Code 1 does NOT map Microsoft.VSTS.Common.Priority for Bugs because
+    # it uses a different bug-specific priority (Custom.BugPriority → BUG_PRIORITY_MAP).
+    # Code 2 maps Microsoft.VSTS.Common.Priority using the standard PRIORITY_MAP
+    # (1→Blocker, 2→High, 3→Low, 4→Trivial), which is appropriate for Requests.
     # Priority
     ado_priority_val = f.get("Microsoft.VSTS.Common.Priority")
     try:
@@ -1665,6 +1805,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         fields["customfield_12719"] = {"value": request_analysis}
         log_to_excel(wi_id, None, "RequestAnalysisResult", "Success", request_analysis)
 
+   #Content Team Solutioning Support
     content_team_solutioning_support = f.get("Custom.ContentTeamSolutioningSupport")
     if content_team_solutioning_support:
         try:
@@ -1982,7 +2123,23 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
             flush_text()
             src = node.get("src", "").strip()
             if src:
-                parts.append({"kind": "image", "src": src})
+                if src.startswith("data:"):
+                    # Inline base64 image — decode and save locally
+                    try:
+                        import base64, uuid
+                        header, b64data = src.split(",", 1)
+                        # e.g. "data:image/jpeg;base64"
+                        mime = header.split(":")[1].split(";")[0]  # e.g. "image/jpeg"
+                        ext = mime.split("/")[1]  # e.g. "jpeg"
+                        filename = f"inline_image_{uuid.uuid4().hex[:8]}.{ext}"
+                        local_path = os.path.join(OUTPUT_DIR, filename)
+                        with open(local_path, "wb") as f:
+                            f.write(base64.b64decode(b64data))
+                        parts.append({"kind": "image_local", "path": local_path, "filename": filename})
+                    except Exception as e:
+                        log(f"   ⚠️ Failed to decode base64 image: {e}")
+                else:
+                    parts.append({"kind": "image", "src": src})
             return
         if name == "a":
             href = (node.get("href") or "").strip()
@@ -1999,9 +2156,36 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         if name == "br":
             text_buf.append("\n")
             return
+        # ---- TABLE → render as Jira wiki markup ----
+        if name == "table":
+            flush_text()
+            jira_table_lines = []
+            for tr in node.find_all("tr"):
+                cells = tr.find_all(["td", "th"])
+                if not cells:
+                    continue
+                # Determine if any cell is a <th> or it's the first row → header row
+                is_header = any(c.name == "th" for c in cells)
+                row_parts = []
+                for cell in cells:
+                    cell_text = cell.get_text(separator=" ", strip=True).replace("|", "\\|")
+                    # Bold the text if it's a th
+                    if cell.name == "th" or (cell.find("strong") or cell.find("b")):
+                        cell_text = f"*{cell_text}*" if cell_text else " "
+                    if not cell_text:
+                        cell_text = " "
+                    row_parts.append(cell_text)
+                if is_header:
+                    jira_table_lines.append("||" + "||".join(row_parts) + "||")
+                else:
+                    jira_table_lines.append("|" + "|".join(row_parts) + "|")
+            if jira_table_lines:
+                parts.append({"kind": "text", "value": "\n".join(jira_table_lines)})
+            return
+
         is_block = name in {"p", "div", "li", "ul", "ol",
                              "h1", "h2", "h3", "h4", "h5", "h6",
-                             "blockquote", "table", "tr", "td", "th"}
+                             "blockquote"}
         if is_block:
             flush_text()
             for child in node.children if hasattr(node, 'children') else []:
@@ -2017,6 +2201,36 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
     return parts
 
 
+# CODE 1 NOTE: Code 1 replaces _parse_comment_markdown with a more capable
+# _parse_comment_markdown_improved function that:
+#   1. Calls _fix_ado_malformed_markdown_links(text) first to fix two ADO link patterns:
+#      a. Title-escaped links: [text](url "title") → [text](url)
+#      b. Angle+paren triple-duplicate links: <[url>](url> "url%3e") → [url](url)
+#         (ADO sometimes emits the same URL three times in this broken format)
+#   2. Extracts inline images (![alt](url)) separately from text, emitting them as
+#      {"kind": "image", "src": url} parts in document order (just like HTML parser).
+#      Code 2's _parse_comment_markdown does NOT extract images at all.
+#   3. Calls _deduplicate_links_in_parts(parts) after parsing to remove duplicate
+#      [text|url] Jira links across all text parts.
+#   4. Calls _convert_markdown_to_jira_wiki on each text segment individually.
+#
+# Code 1 also adds two standalone helper functions used by _parse_comment_markdown_improved:
+#   - _fix_ado_malformed_markdown_links(text) — fixes broken ADO link syntax
+#   - _deduplicate_links_in_parts(parts)      — removes duplicate Jira links in-place
+#   - build_comment_body_with_images(parts, image_url_map, meta_line, issue_key)
+#     — assembles the final Jira comment body with text and uploaded images interleaved
+#
+# Code 1 also adds detect_comment_format(comment) which provides smarter format detection
+# beyond the simple comment_format == "html" / "markdown" check in Code 2:
+#   - Always uses HTML path if rendered_text looks like HTML (prevents raw HTML tags
+#     passing through the markdown pipeline as literal text)
+#   - KEY FIX: If raw_text itself contains block-level HTML tags (<div>, <img>, <br>, etc.)
+#     even when format is "markdown" or "text", routes to HTML parser
+#   - Distinguishes markdown vs plain text by looking for markdown syntax patterns
+#
+# Code 2's process_comment_and_post uses a simpler inline format check and calls the
+# simpler _parse_comment_markdown. If ADO markdown comments contain images, malformed
+# links, or raw HTML in the text field, use Code 1's improved implementation.
 def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
     if not text:
         return []
@@ -2040,6 +2254,9 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     def _looks_like_html(text: str) -> bool:
         return bool(re.search(r'<[a-zA-Z][^>]*>', text or ""))
 
+    # CODE 1 NOTE: Code 1 extracts format detection into a separate reusable function
+    # detect_comment_format(comment) with more robust logic (see comment above
+    # _parse_comment_markdown). Code 2 inlines the simpler detection here.
     if comment_format == "markdown":
         if not raw_text or not raw_text.strip():
             _post_text_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
@@ -2073,9 +2290,13 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
         update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (no parseable content)")
         return
 
-    has_images = any(p["kind"] == "image" for p in parts)
+    has_images = any(p["kind"] in ("image", "image_local") for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
+    # CODE 1 NOTE: Code 1 logs format and part count here with richer detail:
+    #   log(f"   💬 Comment[{idx}]: format={comment_format}, has_content={bool(raw_text or rendered_text)}")
+    #   log(f"   📝 Comment[{idx}]: {len(parts)} parts | text={has_text} | images={count}")
+    # Code 2 logs a simpler single line.
     log(f"   💬 Comment[{comment_index}]: {len(parts)} parts | images={sum(1 for p in parts if p['kind'] == 'image')} | text={has_text}")
 
     if not has_images:
@@ -2091,37 +2312,49 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     img_fail_count = 0
 
     for p in parts:
-        if p["kind"] != "image":
+        if p["kind"] not in ("image", "image_local"):
             continue
-        src = p["src"]
-        if src in image_url_map:
+        
+        if p["kind"] == "image_local":
+            local_file = p["path"]
+            src_key = p["path"]  # use path as the dedup key
+        else:
+            src = p["src"]
+            src_key = src
+            if src_key in image_url_map:
+                continue
+            filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
+            local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+        
+        if src_key in image_url_map:
             continue
-        filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
-        local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+            
         if not local_file:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
             continue
+            
         upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
         if upload_info and upload_info.get("content"):
-            image_url_map[src] = upload_info["content"]
+            image_url_map[src_key] = upload_info["content"]
             img_upload_count += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
-            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
             img_upload_count += 1
         else:
             img_fail_count += 1
-            image_url_map[src] = None
-
+            image_url_map[src_key] = None
+        
     body_parts: List[str] = [meta_line]
     for p in parts:
         if p["kind"] == "text":
             txt = p["value"].strip()
             if txt:
                 body_parts.append(txt)
-        elif p["kind"] == "image":
-            jira_url = image_url_map.get(p["src"])
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
             if jira_url:
                 body_parts.append(f"!{jira_url}!")
             else:
@@ -2279,6 +2512,8 @@ def migrate_all():
     else:
         mapping = {}
 
+    # CODE 1 NOTE: Code 1 WIQL queries for WorkItemType = 'Bug' in the same date range.
+    # Code 2 queries for WorkItemType = 'Request' below.
     wiql = (
         "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-02-21' "
         "AND [System.CreatedDate] <= '2026-02-28' AND [System.WorkItemType] = 'Request'"
@@ -2290,7 +2525,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = None
+    SPECIFIC_ID = ["697240"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2330,41 +2565,21 @@ def migrate_all():
             except Exception as e:
                 log_to_excel(wi_id, issue_key, "Create Links", "Error", str(e)[:100])
 
-            # # 3) ReproSteps
-            # repro_steps_html = wi.get("fields", {}).get("Microsoft.VSTS.TCM.ReproSteps", "")
-            # if repro_steps_html:
-            #     try:
-            #         attachment_map = download_and_upload_reprosteps_images(
-            #             issue_key, repro_steps_html, wi_id=wi_id)
-            #         if attachment_map:
-            #             time.sleep(2)
-            #         verified_map = {}
-            #         for src, att_id in attachment_map.items():
-            #             base = clean_base(JIRA_URL)
-            #             verify_url = f"{base}/rest/api/3/attachment/{att_id}"
-            #             verify_response = api_request("get", verify_url, wi_id=wi_id, issue_key=issue_key,
-            #                                            step=f"Verify Attachment {att_id}", auth=jira_auth())
-            #             if verify_response.status_code == 200:
-            #                 verified_map[src] = att_id
-            #         jira_repro_adf = convert_ado_reprosteps_to_jira_adf(repro_steps_html, verified_map, issue_key)
-            #         if jira_repro_adf.get("content"):
-            #             base = clean_base(JIRA_URL)
-            #             url = f"{base}/rest/api/3/issue/{issue_key}"
-            #             r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
-            #                             step="Update ReproSteps", auth=jira_auth(),
-            #                             headers={"Content-Type": "application/json"},
-            #                             json={"fields": {"customfield_12494": jira_repro_adf}})
-            #             if r.status_code in (200, 204):
-            #                 log(f"   ✅ Updated ReproSteps for {issue_key}")
-            #                 log_to_excel(wi_id, issue_key, "Update ReproSteps", "Success", "ReproSteps updated")
-            #             else:
-            #                 log_to_excel(wi_id, issue_key, "Update ReproSteps", "Failed", f"HTTP {r.status_code}")
-            #     except Exception as e:
-            #         log_to_excel(wi_id, issue_key, "Update ReproSteps", "Error", str(e)[:100])
-            # else:
-            #     log_to_excel(wi_id, issue_key, "Update ReproSteps", "Skipped", "No ReproSteps found")
+            # CODE 1 NOTE: Step 3 (ReproSteps) is fully implemented and active in Code 1.
+            # It includes:
+            #   a. fix_relative_urls_in_repro_steps(repro_steps_html) — converts relative
+            #      ADO attachment URLs to absolute before processing
+            #   b. download_and_upload_reprosteps_images() — downloads images and uploads to Jira
+            #   c. A verification loop that checks each uploaded attachment via GET before use
+            #   d. time.sleep(2) after upload to allow Jira to process attachments
+            #   e. convert_ado_reprosteps_to_jira_adf() — converts HTML to ADF
+            #   f. PUT to customfield_12494 to update the Jira ReproSteps field
+            # Code 2 has this entire step commented out as Requests do not use ReproSteps.
 
             # 4) Steps field
+            # CODE 1 NOTE: In Code 1 steps_payload is populated by steps_formatter() at the
+            # top of build_jira_fields_from_ado(). In Code 2 the steps_formatter call is
+            # commented out so steps_payload will always be None/falsy here.
             try:
                 url = f"{JIRA_URL}rest/api/3/issue/{issue_key}"
                 headers = {"Content-Type": "application/json"}
