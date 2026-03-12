@@ -213,20 +213,64 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
         return False
 
     def process_table(table_elem) -> Dict:
-        """Convert an HTML table element to an ADF table node."""
+        """Convert an HTML table element to an ADF table node.
+        Skips rows and columns that are entirely empty (caused by ADO rowspan/colspan markup).
+        """
         table_rows = []
-        for tr in table_elem.find_all("tr"):
-            row_cells = []
+
+        # First pass: collect all rows with their real cell count
+        all_rows = table_elem.find_all("tr")
+
+        # Track which column indices have ANY content across all rows
+        # so we can drop entirely-empty columns too
+        col_has_content = {}
+
+        raw_rows = []
+        for tr in all_rows:
+            tds = tr.find_all(["td", "th"])
+            row_data = []
+            for col_idx, td in enumerate(tds):
+                text = td.get_text(separator=" ", strip=True)
+                # Also check for images
+                has_img = bool(td.find("img"))
+                has_content = bool(text) or has_img
+                row_data.append((td, has_content))
+                if has_content:
+                    col_has_content[col_idx] = True
+            raw_rows.append(row_data)
+
+        # Identify columns that have content in at least one row
+        # (This handles phantom extra columns from colspan/rowspan)
+        max_cols = max((len(r) for r in raw_rows), default=0)
+        # A column is "real" if it has content anywhere OR if it's the only column
+        real_col_indices = {i for i in range(max_cols) if col_has_content.get(i, False)}
+        # If NO columns have content at all, keep all (edge case)
+        if not real_col_indices:
+            real_col_indices = set(range(max_cols))
+
+        for tr, row_data in zip(all_rows, raw_rows):
+            # Skip rows where ALL cells are empty
+            if not any(has_content for _, has_content in row_data):
+                continue
+
             is_header_row = bool(tr.find("th"))
-            for td in tr.find_all(["td", "th"]):
+            row_cells = []
+
+            for col_idx, (td, has_content) in enumerate(row_data):
+                # Skip columns that are empty everywhere
+                if col_idx not in real_col_indices:
+                    continue
+
                 cell_type = "tableHeader" if (td.name == "th" or is_header_row) else "tableCell"
                 cell_content = _extract_cell_content(td)
                 row_cells.append({
                     "type": cell_type,
                     "content": [{"type": "paragraph", "content": cell_content}]
                 })
+
             if row_cells:
                 table_rows.append({"type": "tableRow", "content": row_cells})
+
         if table_rows:
             return {
                 "type": "table",
@@ -298,24 +342,49 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
 
         # ---- Inline formatting tags — accumulate into buffer ----
         if name in ("b", "strong"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "strong"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "strong"}]})
+            else:
+                # Has non-text children (e.g. <img>) — recurse so they aren't dropped
+                for child in node.children:
+                    walk(child)
             return
 
         if name in ("i", "em"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "em"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "em"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "u":
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "underline"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "underline"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "a":
@@ -815,6 +884,9 @@ def ado_get_comments(wi_id: int) -> List[Dict]:
     if r.status_code == 200:
         return r.json().get("comments", [])
     else:
+        # CODE 1 DIFFERENCE: Code 1 logs only the status code here (omits r.text),
+        # keeping the warning leaner. Code 2 includes r.text which aids debugging
+        # but may produce very long output for large error bodies.
         log(f"   ⚠️ Comments fetch failed for {wi_id}: {r.status_code} {r.text}")
         return []
 
@@ -899,6 +971,10 @@ def ado_download_attachment(att_url: str, desired_filename: str, wi_id=None, iss
                     for chunk in r.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
+                # CODE 1 DIFFERENCE: Code 1 calls log_to_excel here after a successful
+                # download to record "Download Attachment" → "Success" in the migration log.
+                # Code 2 does NOT call log_to_excel here; it relies on callers to log results.
+                # Adding this call would give finer-grained per-attachment tracking in the Excel report.
                 return local_path
             else:
                 log(f"   ⚠️ Download attempt {idx} failed ({r.status_code}) for: {url_try}")
@@ -958,6 +1034,11 @@ def jira_upload_attachment(issue_key: str, file_path: str, wi_id=None) -> dict:
     filename = info.get("filename") or os.path.basename(file_path)
     content_url = info.get("content") or info.get("url") or None
     log(f"Media ID : {media_id} , id: {numeric_id} , filename :{filename} , Content : {content_url}")
+    # CODE 1 DIFFERENCE: Code 1 calls log_to_excel here on successful upload
+    # to record "Upload Attachment" → "Success" with filename and ID directly
+    # inside jira_upload_attachment itself. Code 2 does NOT do this; callers
+    # are responsible for logging upload results. Adding the call here would
+    # ensure every upload is recorded even when callers forget to log it.
     return {
         "mediaId": media_id,
         "id": numeric_id,
@@ -973,14 +1054,27 @@ def jira_create_issue(fields: Dict, wi_id=None) -> str:
     url = f"{base}/rest/api/3/issue"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
     print(fields, "lop")
+    # CODE 1 DIFFERENCE: Code 1 adds a retry/fallback mechanism inside jira_create_issue.
+    # If the initial POST returns HTTP 400 and the error body indicates that "assignee"
+    # or "reporter" fields were rejected (field-level validation errors), Code 1 strips
+    # those fields and retries the request automatically — logging a warning for each
+    # removed field. Code 2 does NOT have this retry; a 400 due to a bad assignee/reporter
+    # immediately fails the issue creation. Adding this logic avoids hard failures when
+    # user account IDs are invalid for the target project's permission scheme.
     r = api_request("post", url, wi_id=wi_id, step="Create Issue",
                     auth=jira_auth(), headers=headers, json={"fields": fields})
     if r.status_code == 201:
         key = r.json().get("key")
         log(f"✅ Created {key}")
+        # CODE 1 DIFFERENCE: Code 1 also calls log_to_excel here on success,
+        # recording "Create Issue" → "Success" with the new issue key.
+        # Code 2 leaves this logging to the caller in migrate_all.
         return key
     else:
         log(f"❌ Issue create failed: {r.status_code} {r.text}")
+        # CODE 1 DIFFERENCE: Code 1 calls log_to_excel here on failure, recording
+        # "Create Issue" → "Failed" with the HTTP status and truncated body.
+        # Code 2 leaves failure logging to the caller.
         return ""
 
 def jira_add_comment(issue_key: str, text: str, wi_id=None):
@@ -1244,6 +1338,54 @@ def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id
 
 
 def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str, str] = None, issue_key: str = None) -> Dict:
+    # CODE 1 DIFFERENCE: Code 1 completely rewrites this function using a proper
+    # DOM-walking approach (similar to improved_process_description_to_adf).
+    # The key improvements in Code 1's version are:
+    #
+    # 1. DOCUMENT ORDER PRESERVATION: Code 1 walks all DOM nodes in document order
+    #    using a recursive walk() function, so content outside tables (paragraphs,
+    #    lists, headings, code blocks, plain divs) is also emitted correctly.
+    #    Code 2 first finds all tables, processes them, then uses table.decompose()
+    #    to remove them before processing "remaining_elements" — this can silently
+    #    drop content that sits between tables or is nested in complex structures.
+    #
+    # 2. ORDERED/UNORDERED LISTS: Code 1 explicitly handles <ul> and <ol> tags,
+    #    emitting proper ADF "bulletList" / "orderedList" nodes with "listItem"
+    #    children. Code 2 does not handle list tags at all — list items are
+    #    flattened into plain text paragraphs via get_text().
+    #
+    # 3. HEADING TAGS: Code 1 handles <h1>–<h6> and emits ADF "heading" nodes
+    #    with the correct "level" attribute. Code 2 ignores heading tags.
+    #
+    # 4. CODE BLOCKS: Code 1 detects <pre> elements and <div>/<span> elements
+    #    with monospace/courier/consolas styles and emits ADF "codeBlock" nodes.
+    #    Code 2 only handles <pre> implicitly through the div/element fallback
+    #    and does not emit codeBlock nodes for monospace-styled elements.
+    #
+    # 5. INLINE RICH TEXT INSIDE TABLE CELLS: Code 1 processes inline nodes
+    #    (bold, italic, links, br) recursively within table cells via
+    #    inline_nodes_from(). Code 2 uses process_text_content() which correctly
+    #    handles <b>/<strong>, <i>/<em>, <br>, and nested divs/spans,
+    #    but does NOT handle <a> links inside cells — they are lost.
+    #    Code 1's inline_nodes_from() handles <a> links fully.
+    #
+    # 6. IMAGES INSIDE TABLE CELLS: Both codes handle images inside table cells,
+    #    but Code 1's approach decomposes the <img> in-place before extracting
+    #    remaining inline text, ensuring images and text don't get mixed together.
+    #    Code 2 does the same with img.decompose() — this part is equivalent.
+    #
+    # 7. FIX_RELATIVE_URLS: Code 1's migrate_all() calls
+    #    fix_relative_urls_in_repro_steps(repro_steps_html) BEFORE passing HTML
+    #    to download_and_upload_reprosteps_images and convert_ado_reprosteps_to_jira_adf.
+    #    This converts relative /HESource/... URLs to absolute https://dev.azure.com/...
+    #    URLs so images can actually be downloaded. Code 2 does NOT call this helper
+    #    anywhere — relative image URLs will silently fail to download.
+    #
+    # 8. ATTACHMENT VERIFICATION: Code 1's migrate_all() verifies each uploaded
+    #    attachment with a GET /rest/api/3/attachment/{att_id} call before passing
+    #    the attachment_map to convert_ado_reprosteps_to_jira_adf, and also adds a
+    #    time.sleep(2) after uploads to let Jira index them. Code 2 does neither —
+    #    unverified IDs may result in broken media nodes in the final ADF.
     if not html_input:
         return {"type": "doc", "version": 1, "content": []}
     soup = BeautifulSoup(html_input, "html.parser")
@@ -1287,6 +1429,9 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                     if text:
                         para_content.append({"type": "text", "text": text})
                 else:
+                    # CODE 1 DIFFERENCE: Code 1's inline_nodes_from() handles <a> tags
+                    # explicitly, emitting a "link" mark. Code 2's process_text_content()
+                    # falls through to get_text() here, losing the href entirely.
                     text = child.get_text(strip=True)
                     if text:
                         para_content.append({"type": "text", "text": text})
@@ -1323,9 +1468,19 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                 rows.append({"type": "tableRow", "content": cells})
         if rows:
             doc_content.append({"type": "table", "attrs": {"isNumberColumnEnabled": False, "layout": "default"}, "content": rows})
+        # CODE 1 DIFFERENCE: Code 1 does NOT call table.decompose() here.
+        # Instead it uses a recursive walk() that processes each node in document
+        # order, so tables are handled inline. Code 2 decomposes each table from
+        # the soup after processing it — this is fine for tables themselves but
+        # means the "remaining_elements" pass below only sees non-table content,
+        # which can miss content that was interleaved between tables.
         table.decompose()
 
     if tables and doc_content:
+        # CODE 1 DIFFERENCE: Code 1 does NOT emit a "rule" (horizontal divider)
+        # node between the table section and remaining content. Code 2 emits
+        # {"type": "rule"} here. This is a cosmetic difference — Code 1's output
+        # has no divider while Code 2 inserts one after all tables are processed.
         doc_content.append({"type": "rule"})
 
     remaining_elements = soup.find_all(["div", "p", "img"], recursive=False)
@@ -1384,8 +1539,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     raw_desc = f.get("System.Description", "")
     desc_text = clean_html_to_text(raw_desc)
 
-    ado_type = f.get("System.WorkItemType", "Task")
-    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
+    ado_type = f.get("System.WorkItemType", "Epic")
+    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Epic")
     log_to_excel(wi_id, None, "Issue Type Mapping", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
     tags = f.get("System.Tags", "")
@@ -1979,8 +2134,13 @@ def jira_add_comment_for_link(issue_key: str, body: str, wi_id=None):
                            headers=headers, auth=jira_auth(), json={"body": body})
     if response.status_code == 201:
         print(f"✅ Comment added to {issue_key}")
+        # CODE 1 DIFFERENCE: Code 1 calls update_wi_row here on success to record
+        # "Add Comment (link)" → "Success" in the per-work-item Excel row.
+        # Code 2 only prints to stdout and does not record to the tracking sheet.
     else:
         print(f"❌ Failed to add comment: {response.status_code}, {response.text}")
+        # CODE 1 DIFFERENCE: Code 1 calls update_wi_row here on failure with
+        # "Add Comment (link)" → "Failed" and the HTTP status + truncated body.
 
 
 def clean_html_to_jira_format(issue_key: str, html_text: str, wi_id=None) -> str:
@@ -2293,6 +2453,12 @@ def _build_mention_map_from_comment(comment: Dict) -> Dict[str, str]:
 
 
 def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
+    # CODE 1 DIFFERENCE: Code 1's version of this function also calls
+    # html.unescape() on the entire text before replacing mentions.
+    # This ensures HTML-encoded characters (e.g. &amp; → &, &quot; → ")
+    # that may appear in markdown body text are decoded before the text
+    # is written to Jira. Code 2 does NOT unescape here — encoded entities
+    # may appear literally in the final Jira comment.
     guid_map = _get_ado_guid_map()
 
     def replace_mention(m):
@@ -2317,6 +2483,44 @@ def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
 
 
 def _convert_markdown_to_jira_wiki(text: str) -> str:
+    # CODE 1 DIFFERENCE: Code 1 has a far more complete markdown-to-Jira-wiki
+    # conversion. The specific improvements are:
+    #
+    # 1. BOLD+ITALIC COMBINED (***text***): Code 1 converts to *_text_* first,
+    #    before handling bold and italic separately, so triple-asterisk is not
+    #    partially consumed. Code 2 does not handle this case at all.
+    #
+    # 2. BOLD with SENTINEL protection: Code 1 replaces **text** with private
+    #    sentinel characters (_BOLD_START / _BOLD_END) before processing italic,
+    #    then restores them as Jira *bold* at the end. This prevents the italic
+    #    regex from accidentally consuming the inner * of a bold span.
+    #    Code 2 applies both regexes in sequence without protection, which can
+    #    corrupt text like **bold** → *bold* (correct) but also
+    #    ***bold-italic*** → partially mangled output.
+    #
+    # 3. INLINE CODE (`code`): Code 1 converts backtick inline code to {{code}}.
+    #    Code 2 does not handle inline code at all.
+    #
+    # 4. MARKDOWN LINKS ([text](url)): Code 1 converts to Jira [text|url] format,
+    #    with special handling for cases where the display text IS the URL.
+    #    Code 2 does not convert markdown links at all — they appear as raw
+    #    [text](url) strings in Jira.
+    #
+    # 5. ANGLE-BRACKET URLS (<https://...>): Code 1 converts to [url] Jira links.
+    #    Code 2 does not handle these.
+    #
+    # 6. ATX HEADINGS (### Heading): Code 1 converts to Jira h3. Heading notation.
+    #    Code 2 does not handle headings.
+    #
+    # 7. GFM PIPE TABLES (| col | col |): Code 1 converts to Jira || col || col ||
+    #    table notation. Code 2 does not handle markdown tables.
+    #
+    # 8. UNORDERED LISTS (* item / - item): Code 1 converts to Jira * item bullets
+    #    with support for nested lists via indentation depth.
+    #    Code 2 does not handle list items.
+    #
+    # 9. ORDERED LISTS (1. item): Code 1 converts to Jira # item notation.
+    #    Code 2 does not handle ordered lists.
     text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
     text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)
     return text
@@ -2405,7 +2609,23 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
             flush_text()
             src = node.get("src", "").strip()
             if src:
-                parts.append({"kind": "image", "src": src})
+                if src.startswith("data:"):
+                    # Inline base64 image — decode and save locally
+                    try:
+                        import base64, uuid
+                        header, b64data = src.split(",", 1)
+                        # e.g. "data:image/jpeg;base64"
+                        mime = header.split(":")[1].split(";")[0]  # e.g. "image/jpeg"
+                        ext = mime.split("/")[1]  # e.g. "jpeg"
+                        filename = f"inline_image_{uuid.uuid4().hex[:8]}.{ext}"
+                        local_path = os.path.join(OUTPUT_DIR, filename)
+                        with open(local_path, "wb") as f:
+                            f.write(base64.b64decode(b64data))
+                        parts.append({"kind": "image_local", "path": local_path, "filename": filename})
+                    except Exception as e:
+                        log(f"   ⚠️ Failed to decode base64 image: {e}")
+                else:
+                    parts.append({"kind": "image", "src": src})
             return
         if name == "a":
             href = (node.get("href") or "").strip()
@@ -2422,17 +2642,45 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         if name == "br":
             text_buf.append("\n")
             return
+        # ---- TABLE → render as Jira wiki markup ----
+        if name == "table":
+            flush_text()
+            jira_table_lines = []
+            for tr in node.find_all("tr"):
+                cells = tr.find_all(["td", "th"])
+                if not cells:
+                    continue
+                # Determine if any cell is a <th> or it's the first row → header row
+                is_header = any(c.name == "th" for c in cells)
+                row_parts = []
+                for cell in cells:
+                    cell_text = cell.get_text(separator=" ", strip=True).replace("|", "\\|")
+                    # Bold the text if it's a th
+                    if cell.name == "th" or (cell.find("strong") or cell.find("b")):
+                        cell_text = f"*{cell_text}*" if cell_text else " "
+                    if not cell_text:
+                        cell_text = " "
+                    row_parts.append(cell_text)
+                if is_header:
+                    jira_table_lines.append("||" + "||".join(row_parts) + "||")
+                else:
+                    jira_table_lines.append("|" + "|".join(row_parts) + "|")
+            if jira_table_lines:
+                parts.append({"kind": "text", "value": "\n".join(jira_table_lines)})
+            return
+
         is_block = name in {"p", "div", "li", "ul", "ol",
                              "h1", "h2", "h3", "h4", "h5", "h6",
-                             "blockquote", "table", "tr", "td", "th"}
+                             "blockquote"}
         if is_block:
             flush_text()
-            for child in node.children:
+            for child in node.children if hasattr(node, 'children') else []:
                 walk(child)
             flush_text()
             return
-        for child in node.children:
+        for child in node.children if hasattr(node, 'children') else []:
             walk(child)
+
 
     for top in soup.contents:
         walk(top)
@@ -2444,6 +2692,28 @@ def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict
     """Parse ADO markdown comment, resolving @mentions and converting to Jira wiki markup."""
     if not text:
         return []
+
+    # CODE 1 DIFFERENCE: Code 1 replaces this entire function with a more capable
+    # _parse_comment_markdown_improved() that:
+    #
+    # 1. CALLS _fix_ado_malformed_markdown_links(text) first to repair ADO's broken
+    #    link patterns (title-escaped links like [text](url "title") and the ADO
+    #    angle-bracket triple-link pattern <[display>](href> "lower")). Code 2 does
+    #    NOT call this helper, so malformed links appear as raw broken markdown in Jira.
+    #
+    # 2. EXTRACTS INLINE IMAGES (![alt](url)) separately as {"kind": "image"} parts
+    #    so they can be downloaded, uploaded to Jira, and embedded inline in the
+    #    comment body. Code 2's version returns only a single {"kind": "text"} part
+    #    for the entire comment — inline markdown images are NOT extracted and will
+    #    appear as raw ![alt](url) text in Jira.
+    #
+    # 3. CALLS _deduplicate_links_in_parts() after parsing to remove duplicate
+    #    [text|url] links. Code 2 does not deduplicate links.
+    #
+    # 4. Applies _resolve_markdown_mentions and _convert_markdown_to_jira_wiki to
+    #    each text segment individually (between images), rather than to the whole
+    #    text at once. This is equivalent in behavior for text-only comments but
+    #    necessary for correct image interleaving.
 
     resolved_text = _resolve_markdown_mentions(text, mention_map)
     resolved_text = _convert_markdown_to_jira_wiki(resolved_text)
@@ -2491,6 +2761,31 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None,
     def _looks_like_html(text: str) -> bool:
         return bool(re.search(r'<[a-zA-Z][^>]*>', text or ""))
 
+    # CODE 1 DIFFERENCE: Code 1 replaces this entire format-detection block with a
+    # dedicated detect_comment_format() function that adds two critical improvements:
+    #
+    # 1. RENDERED HTML PRIORITY: If rendered_text looks like HTML, Code 1 always
+    #    routes to the HTML parser — even if comment_format is "markdown" or "text".
+    #    This prevents duplicate links: ADO sometimes renders markdown links as HTML
+    #    <a> tags in renderedText, so passing raw_text through the markdown pipeline
+    #    would double-emit them. Code 2's inline _looks_like_html check does some of
+    #    this but applies it less consistently.
+    #
+    # 2. BLOCK HTML IN RAW_TEXT DETECTION: Code 1 adds a _looks_like_block_html()
+    #    check on raw_text using a stricter pattern (div, img, br, p, table, ul, ol,
+    #    li, h1-h6, <a ). If raw_text itself contains block-level HTML tags — which
+    #    ADO sometimes stores in the text field even when format is "markdown" — Code 1
+    #    routes to the HTML parser instead. Without this, Code 2 would pass raw HTML
+    #    through the markdown pipeline as literal text, displaying raw tags in Jira.
+    #
+    # 3. MARKDOWN DETECTION: Code 1 also checks _looks_like_markdown() on raw_text
+    #    when deciding whether to use the markdown path for non-HTML "markdown"/"text"
+    #    formatted comments, making the routing more precise.
+    #
+    # 4. FORMAT LOGGING: Code 1 logs the detected format and content presence with
+    #    a 💬 emoji line at the start, making it easier to diagnose comment processing
+    #    in the output log. Code 2 does not log the detected format.
+
     # ---- Determine format and parse accordingly ----
     if comment_format == "markdown":
         if not raw_text or not raw_text.strip():
@@ -2530,7 +2825,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None,
                      "Meta-only (no parseable content)")
         return
 
-    has_images = any(p["kind"] == "image" for p in parts)
+    has_images = any(p["kind"] in ("image", "image_local") for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
     log(f"   💬 Comment[{comment_index}]: {len(parts)} parts | "
@@ -2552,30 +2847,45 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None,
     img_upload_fail = 0
 
     for p in parts:
-        if p["kind"] != "image":
+        if p["kind"] not in ("image", "image_local"):
             continue
-        src = p["src"]
-        if src in image_url_map:
-            continue  # already processed
-        filename = parse_qs(urlparse(src).query or "").get("fileName", [f"img_{comment_index}.png"])[0]
-        local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+        
+        if p["kind"] == "image_local":
+            local_file = p["path"]
+            src_key = p["path"]  # use path as the dedup key
+        else:
+            src = p["src"]
+            src_key = src
+            if src_key in image_url_map:
+                continue
+            filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
+            local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+        
+        if src_key in image_url_map:
+            continue
+            
         if not local_file:
-            img_upload_fail += 1
-            image_url_map[src] = None
-            log(f"   ⚠️ Failed to download image: {src}")
+            img_fail_count += 1
+            image_url_map[src_key] = None
             continue
+            
         upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
         if upload_info and upload_info.get("content"):
-            image_url_map[src] = upload_info["content"]
-            img_upload_ok += 1
+            image_url_map[src_key] = upload_info["content"]
+            img_upload_count += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
-            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
-            img_upload_ok += 1
+            image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            img_upload_count += 1
         else:
-            img_upload_fail += 1
-            image_url_map[src] = None
+            img_fail_count += 1
+            image_url_map[src_key] = None
             log(f"   ⚠️ Failed to upload image: {filename}")
+
+        # CODE 1 DIFFERENCE: Code 1 attempts to delete the local temp file after upload
+        # using os.remove() in a try/except block, cleaning up ado_attachments/ as it goes.
+        # Code 2 does NOT clean up local files during comment processing — they accumulate
+        # in the ado_attachments/ directory until the final cleanup pass in migrate_all().
 
     # Build combined wiki-markup body, preserving original order of text/image parts
     body_parts: List[str] = [meta_line]
@@ -2584,8 +2894,9 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None,
             txt = p["value"].strip()
             if txt:
                 body_parts.append(txt)
-        elif p["kind"] == "image":
-            jira_url = image_url_map.get(p["src"])
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
             if jira_url:
                 body_parts.append(f"!{jira_url}!")
             else:
@@ -2630,7 +2941,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = None  # Set to None for batch mode
+    SPECIFIC_ID = ["841690"]  # Set to None for batch mode
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2677,6 +2988,13 @@ def migrate_all():
                 log_to_excel(wi_id, issue_key, "Create Links", "Error", str(e)[:100])
 
             # 3) UPDATE DESCRIPTION FIELD — uses improved_process_description_to_adf for table support
+            # CODE 1 DIFFERENCE: Code 1 migrates ReproSteps (step 3) BEFORE the description (step 5).
+            # Code 2 migrates the description immediately after links (step 3 here) and has no
+            # dedicated ReproSteps step. The processing order matters because both steps call
+            # jira_upload_attachment — doing ReproSteps first means its attachment IDs are allocated
+            # before description images, which can help with Jira's media indexing in some configurations.
+            # Code 1 also includes a fix_relative_urls_in_repro_steps() call and an attachment
+            # verification loop with time.sleep(2) that Code 2 entirely lacks.
             try:
                 print("one")
                 raw_desc = wi.get("fields", {}).get("System.Description", "")
@@ -2759,6 +3077,11 @@ def migrate_all():
                 log_to_excel(wi_id, issue_key, "Attachments", "Error", str(e)[:100])
 
             # 6) COMMENTS — improved handler covers all text/image/markdown combinations
+            # CODE 1 DIFFERENCE: Code 1 iterates comments in reversed(comments) order so that the
+            # oldest comment is posted first (preserving chronological order in Jira, since Jira
+            # appends comments). Code 2 also calls reversed(comments) — this is identical.
+            # Code 1 additionally calls update_wi_row at the end with a Comments_Summary covering
+            # ok_count and fail_count, which Code 2 also does. This section is functionally equivalent.
             try:
                 comments = ado_get_comments(wi_id)
                 if comments:
@@ -2800,6 +3123,9 @@ def migrate_all():
             log(f"✅ Work item ADO #{wi_id_str} → {issue_key} migration complete")
 
     log("🎉 Migration completed.")
+    # CODE 1 DIFFERENCE: Code 1 calls log_system("Migration Complete", "Success", ...) here
+    # to record a final system-level event in the SystemLog sheet of the Excel file.
+    # Code 2 does not make this call — the SystemLog sheet will be empty or minimal.
 
     # Cleanup
     try:
