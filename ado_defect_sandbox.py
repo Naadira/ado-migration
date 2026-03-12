@@ -371,6 +371,12 @@ _MARKDOWN_MENTION_RE = re.compile(
 
 
 def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
+    """Resolve markdown mentions and unescape HTML entities including emoji."""
+    import html as html_lib
+
+    # First unescape HTML entities (&quot; -> ", &amp; -> &, etc)
+    text = html_lib.unescape(text)
+
     guid_map = _get_ado_guid_map()
 
     def replace_mention(m):
@@ -394,10 +400,132 @@ def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
     return _MARKDOWN_MENTION_RE.sub(replace_mention, text)
 
 
-def _convert_markdown_to_jira_wiki(text: str) -> str:
-    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
-    text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)
+# ============================================================
+# IMPROVED _convert_markdown_to_jira_wiki (from Code 1)
+# Handles: ATX headings, GFM pipe tables, unordered/ordered
+# lists, bold, italic, inline code, markdown links, bare URLs.
+# ============================================================
+
+_BOLD_START = '\x00B\x00'
+_BOLD_END   = '\x00E\x00'
+
+
+def _inline_md_to_jira(text: str) -> str:
+    """Apply inline markdown → Jira wiki conversions to a single line/span."""
+
+    # 1. Protect inline code: `code` → {{code}}
+    text = re.sub(r'`([^`]+)`', r'{{\1}}', text)
+
+    # 2. Bold+italic ***text*** → *_text_*  (must precede bold/italic separately)
+    text = re.sub(r'\*{3}(.+?)\*{3}', r'*_\1_*', text)
+
+    # 3. Bold **text** → placeholder sentinels so the italic step won't re-consume them
+    text = re.sub(r'\*{2}(.+?)\*{2}',
+                  lambda m: _BOLD_START + m.group(1) + _BOLD_END, text)
+
+    # 4. Italic *text* → _text_  (only single * remain now)
+    text = re.sub(r'\*([^*\n]+)\*', r'_\1_', text)
+
+    # 5. Restore bold sentinels → Jira *bold*
+    text = text.replace(_BOLD_START, '*').replace(_BOLD_END, '*')
+
+    # 6. Markdown links: [text](url) → [text|url]
+    #    NOT image links (those start with !) — already extracted upstream
+    def md_link_to_jira(m):
+        link_text = m.group(1)
+        url = m.group(2).rstrip('>').strip()
+        # If display text IS the URL, emit bare [url] (no duplicate text)
+        if link_text.startswith('http') and link_text.rstrip('>') == url:
+            return f'[{url}]'
+        return f'[{link_text}|{url}]'
+
+    text = re.sub(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', md_link_to_jira, text)
+
+    # 7. Bare angle-bracket URLs: <https://...> → [https://...]
+    text = re.sub(r'<(https?://[^>]+)>', r'[\1]', text)
+
     return text
+
+
+def _convert_markdown_to_jira_wiki(text: str) -> str:
+    """
+    Convert GitHub-flavoured markdown to Jira wiki markup.
+
+    Handles:
+      - ATX headings: ### Heading  → h3. Heading
+      - GFM pipe tables: | col | → Jira || col ||
+      - Unordered lists: * item / - item  → * item  (Jira wiki bullet)
+      - Ordered lists: 1. item → # item
+      - Bold: **text**  → *text*
+      - Italic: *text* (single) → _text_
+      - Inline code: `code`  → {{code}}
+      - Markdown links: [text](url)  → [text|url]
+      - Bare URLs: https://...  → left as-is (Jira auto-links)
+    """
+    lines = text.split('\n')
+    out = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+
+        # --- Detect GFM pipe table block ---
+        if re.match(r'^\s*\|', line):
+            table_lines = []
+            while i < len(lines) and re.match(r'^\s*\|', lines[i].rstrip()):
+                table_lines.append(lines[i].rstrip())
+                i += 1
+
+            first_row = True
+            for tline in table_lines:
+                if re.match(r'^\s*\|[\s\-\|:]+\|\s*$', tline):
+                    continue
+                cells = re.split(r'\s*\|\s*', tline.strip().strip('|'))
+                jira_cells = []
+                for cell in cells:
+                    cell = re.sub(r'\s*<br\s*/?>\s*', ' ', cell, flags=re.IGNORECASE).strip()
+                    cell = _inline_md_to_jira(cell)
+                    jira_cells.append(cell)
+                if first_row:
+                    out.append('||' + '||'.join(jira_cells) + '||')
+                    first_row = False
+                else:
+                    out.append('|' + '|'.join(jira_cells) + '|')
+            continue
+
+        # --- ATX headings: ### Text → h3. Text ---
+        heading_match = re.match(r'^(#{1,6})\s+(.+)$', line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            heading_text = re.sub(r'\s*#+\s*$', '', heading_match.group(2).strip())
+            heading_text = _inline_md_to_jira(heading_text)
+            out.append(f'h{level}. {heading_text}')
+            i += 1
+            continue
+
+        # --- Unordered list items: * item / - item / + item ---
+        bullet_match = re.match(r'^(\s*)[\*\-\+]\s+(.+)$', line)
+        if bullet_match:
+            depth = (len(bullet_match.group(1)) // 2) + 1
+            item_text = _inline_md_to_jira(bullet_match.group(2))
+            out.append('*' * depth + ' ' + item_text)
+            i += 1
+            continue
+
+        # --- Ordered list items: 1. item ---
+        ordered_match = re.match(r'^(\s*)\d+\.\s+(.+)$', line)
+        if ordered_match:
+            depth = (len(ordered_match.group(1)) // 2) + 1
+            item_text = _inline_md_to_jira(ordered_match.group(2))
+            out.append('#' * depth + ' ' + item_text)
+            i += 1
+            continue
+
+        # --- Regular paragraph line — apply inline formatting ---
+        out.append(_inline_md_to_jira(line))
+        i += 1
+
+    return '\n'.join(out)
 
 
 def extract_inline_ado_urls(html_str: str) -> List[str]:
@@ -633,67 +761,471 @@ def _extract_cell_content(cell: Tag) -> List[Dict]:
 
 def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=None) -> dict:
     """
-    Enhanced version that properly handles HTML tables in descriptions.
-    Preserves table structure, rows, columns, and all formatting.
-    Falls back to normal processing for non-table content.
+    Enhanced description processor that walks the full DOM in document order,
+    preserving ALL content: paragraphs, divs, bold/italic text, inline spans,
+    tables, code blocks (monospace spans), images, and links.
+
+    Previously only tables were emitted — all surrounding text was silently dropped.
+    This version processes every node in the order it appears in the HTML.
     """
     if not raw_html or not raw_html.strip():
         return {"type": "doc", "version": 1, "content": []}
 
     soup = BeautifulSoup(raw_html, "html.parser")
-    tables = soup.find_all("table")
 
-    if not tables:
-        # No tables - use original processing
+    # If there are no tables at all, delegate to the original processor
+    if not soup.find("table"):
         return process_description_to_adf(issue_key, raw_html, wi_id=wi_id)
 
-    # Process with table support
     adf_content = []
+    # Buffer for inline text nodes that haven't been flushed into a paragraph yet
+    inline_buf: List[Dict] = []
 
-    for table_elem in tables:
+    def flush_inline():
+        """Flush any accumulated inline nodes as a paragraph block."""
+        if inline_buf:
+            adf_content.append({"type": "paragraph", "content": inline_buf.copy()})
+            inline_buf.clear()
+
+    def make_inline_nodes(element) -> List[Dict]:
+        """
+        Recursively extract inline ADF nodes from an element.
+        Handles: text, <b>/<strong>, <i>/<em>, <u>, <a>, <br>, <span>, <code>.
+        """
+        nodes = []
+        for child in element.children:
+            if isinstance(child, NavigableString):
+                text = html.unescape(str(child)).replace("\xa0", " ")
+                if text.strip() or text == " ":
+                    nodes.append({"type": "text", "text": text})
+            elif isinstance(child, Tag):
+                name = (child.name or "").lower()
+                if name == "br":
+                    nodes.append({"type": "hardBreak"})
+                elif name in ("b", "strong"):
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "strong"}]})
+                elif name in ("i", "em"):
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "em"}]})
+                elif name == "u":
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "underline"}]})
+                elif name == "code":
+                    text = child.get_text()
+                    if text.strip():
+                        nodes.append({"type": "text", "text": text,
+                                      "marks": [{"type": "code"}]})
+                elif name == "a":
+                    href = (child.get("href") or "").strip()
+                    label = child.get_text(strip=True) or href
+                    if href:
+                        nodes.append({"type": "text", "text": label,
+                                      "marks": [{"type": "link", "attrs": {"href": href}}]})
+                    elif label:
+                        nodes.append({"type": "text", "text": label})
+                elif name == "span":
+                    # Detect monospace/code-style spans (stack traces etc.)
+                    style = (child.get("style") or "").lower()
+                    is_mono = any(k in style for k in ("monospace", "courier", "consolas", "font-family:consolas"))
+                    if is_mono:
+                        raw = child.get_text().replace("\xa0", " ").strip()
+                        if raw:
+                            # Emit as a code block — flush inline first
+                            nodes_copy = nodes.copy()
+                            nodes.clear()
+                            # Return what we have so far, let caller flush, then add code block
+                            # We use a sentinel to signal a block-level code node
+                            nodes.extend(nodes_copy)
+                            nodes.append({"__block__": "codeBlock", "text": raw})
+                    else:
+                        nodes.extend(make_inline_nodes(child))
+                elif name == "img":
+                    src = (child.get("src") or "").strip()
+                    if src and ATTACH_URL_SUBSTR in src:
+                        local_file = download_images_to_ado_attachments(
+                            src, wi_id=wi_id, issue_key=issue_key)
+                        if local_file:
+                            upload = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+                            if upload and upload.get("id"):
+                                nodes.append({"__block__": "mediaSingle",
+                                              "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload['id']}"})
+                    elif src:
+                        nodes.append({"type": "text", "text": src,
+                                      "marks": [{"type": "link", "attrs": {"href": src}}]})
+                else:
+                    nodes.extend(make_inline_nodes(child))
+        return nodes
+
+    def _is_mono_span(node) -> bool:
+        """True if this node is a monospace/code-style span or pre element."""
+        if not isinstance(node, Tag):
+            return False
+        name = (node.name or "").lower()
+        if name == "pre":
+            return True
+        if name == "span":
+            style = (node.get("style") or "").lower()
+            return any(k in style for k in ("monospace", "courier", "consolas"))
+        return False
+
+    def process_table(table_elem) -> Dict:
+        """Convert an HTML table element to an ADF table node.
+        Skips rows and columns that are entirely empty (caused by ADO rowspan/colspan markup).
+        """
         table_rows = []
 
-        for tr in table_elem.find_all("tr"):
+        # First pass: collect all rows with their real cell count
+        all_rows = table_elem.find_all("tr")
+
+        # Track which column indices have ANY content across all rows
+        # so we can drop entirely-empty columns too
+        col_has_content = {}
+
+        raw_rows = []
+        for tr in all_rows:
+            tds = tr.find_all(["td", "th"])
+            row_data = []
+            for col_idx, td in enumerate(tds):
+                text = td.get_text(separator=" ", strip=True)
+                # Also check for images
+                has_img = bool(td.find("img"))
+                has_content = bool(text) or has_img
+                row_data.append((td, has_content))
+                if has_content:
+                    col_has_content[col_idx] = True
+            raw_rows.append(row_data)
+
+        # Identify columns that have content in at least one row
+        # (This handles phantom extra columns from colspan/rowspan)
+        max_cols = max((len(r) for r in raw_rows), default=0)
+        # A column is "real" if it has content anywhere OR if it's the only column
+        real_col_indices = {i for i in range(max_cols) if col_has_content.get(i, False)}
+        # If NO columns have content at all, keep all (edge case)
+        if not real_col_indices:
+            real_col_indices = set(range(max_cols))
+
+        for tr, row_data in zip(all_rows, raw_rows):
+            # Skip rows where ALL cells are empty
+            if not any(has_content for _, has_content in row_data):
+                continue
+
+            is_header_row = bool(tr.find("th"))
             row_cells = []
-            is_header = bool(tr.find("th"))
 
-            for td in tr.find_all(["td", "th"]):
-                cell_type = "header" if td.name == "th" or is_header else "data"
+            for col_idx, (td, has_content) in enumerate(row_data):
+                # Skip columns that are empty everywhere
+                if col_idx not in real_col_indices:
+                    continue
+
+                cell_type = "tableHeader" if (td.name == "th" or is_header_row) else "tableCell"
                 cell_content = _extract_cell_content(td)
-
-                table_cell = {
-                    "type": "tableHeader" if cell_type == "header" else "tableCell",
-                    "content": [{
-                        "type": "paragraph",
-                        "content": cell_content
-                    }]
-                }
-                row_cells.append(table_cell)
-
-            if row_cells:
-                table_rows.append({
-                    "type": "tableRow",
-                    "content": row_cells
+                row_cells.append({
+                    "type": cell_type,
+                    "content": [{"type": "paragraph", "content": cell_content}]
                 })
 
+            if row_cells:
+                table_rows.append({"type": "tableRow", "content": row_cells})
+
         if table_rows:
-            adf_content.append({
+            return {
                 "type": "table",
-                "attrs": {
-                    "isNumberColumnEnabled": False,
-                    "layout": "default"
-                },
+                "attrs": {"isNumberColumnEnabled": False, "layout": "default"},
                 "content": table_rows
-            })
+            }
+        return None
+
+    def walk(node):
+        """Walk a DOM node and emit ADF block nodes into adf_content."""
+        if isinstance(node, NavigableString):
+            text = html.unescape(str(node)).replace("\xa0", " ")
+            if text.strip():
+                inline_buf.append({"type": "text", "text": text})
+            return
+
+        if not isinstance(node, Tag):
+            return
+
+        name = (node.name or "").lower()
+
+        # ---- TABLE — flush inline buffer first, then emit table block ----
+        if name == "table":
+            flush_inline()
+            tbl = process_table(node)
+            if tbl:
+                adf_content.append(tbl)
+            return
+
+        # ---- PRE / monospace SPAN — code block ----
+        if _is_mono_span(node):
+            flush_inline()
+            raw = node.get_text().replace("\xa0", " ").strip()
+            if raw:
+                adf_content.append({
+                    "type": "codeBlock",
+                    "attrs": {"language": ""},
+                    "content": [{"type": "text", "text": raw}]
+                })
+            return
+
+        # ---- IMG — flush then emit mediaSingle ----
+        if name == "img":
+            src = (node.get("src") or "").strip()
+            if src and ATTACH_URL_SUBSTR in src:
+                flush_inline()
+                local_file = download_images_to_ado_attachments(
+                    src, wi_id=wi_id, issue_key=issue_key)
+                if local_file:
+                    upload = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+                    if upload and upload.get("id"):
+                        adf_content.append({
+                            "type": "mediaSingle",
+                            "content": [{"type": "media", "attrs": {
+                                "type": "external",
+                                "url": f"{JIRA_URL}/rest/api/2/attachment/content/{upload['id']}",
+                                "width": 710, "height": 163
+                            }}]
+                        })
+            elif src:
+                inline_buf.append({"type": "text", "text": src,
+                                   "marks": [{"type": "link", "attrs": {"href": src}}]})
+            return
+
+        # ---- BR — inline line break ----
+        if name == "br":
+            inline_buf.append({"type": "hardBreak"})
+            return
+
+        # ---- Inline formatting tags — accumulate into buffer ----
+        if name in ("b", "strong"):
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "strong"}]})
+            else:
+                # Has non-text children (e.g. <img>) — recurse so they aren't dropped
+                for child in node.children:
+                    walk(child)
+            return
+
+        if name in ("i", "em"):
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "em"}]})
+            else:
+                for child in node.children:
+                    walk(child)
+            return
+
+        if name == "u":
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "underline"}]})
+            else:
+                for child in node.children:
+                    walk(child)
+            return
+
+        if name == "a":
+            href = (node.get("href") or "").strip()
+            label = node.get_text(strip=True) or href
+            if href:
+                inline_buf.append({"type": "text", "text": label,
+                                   "marks": [{"type": "link", "attrs": {"href": href}}]})
+            elif label:
+                inline_buf.append({"type": "text", "text": label})
+            return
+
+        if name == "span":
+            style = (node.get("style") or "").lower()
+            is_mono = any(k in style for k in ("monospace", "courier", "consolas"))
+            if is_mono:
+                flush_inline()
+                raw = node.get_text().replace("\xa0", " ").strip()
+                if raw:
+                    adf_content.append({
+                        "type": "codeBlock",
+                        "attrs": {"language": ""},
+                        "content": [{"type": "text", "text": raw}]
+                    })
+                return
+            # Regular span — recurse into children
+            for child in node.children:
+                walk(child)
+            return
+
+        # ---- Block tags: P, DIV, H1-H6, BLOCKQUOTE, SECTION ----
+        if name in ("p", "blockquote", "section", "article"):
+            flush_inline()
+            local_inline: List[Dict] = []
+            for child in node.children:
+                if isinstance(child, NavigableString):
+                    text = html.unescape(str(child)).replace("\xa0", " ")
+                    if text.strip() or text == " ":
+                        local_inline.append({"type": "text", "text": text})
+                elif isinstance(child, Tag):
+                    cname = (child.name or "").lower()
+                    if cname == "br":
+                        local_inline.append({"type": "hardBreak"})
+                    elif cname in ("b", "strong"):
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t,
+                                                 "marks": [{"type": "strong"}]})
+                    elif cname in ("i", "em"):
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t,
+                                                 "marks": [{"type": "em"}]})
+                    elif cname == "u":
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t,
+                                                 "marks": [{"type": "underline"}]})
+                    elif cname == "a":
+                        href = (child.get("href") or "").strip()
+                        label = child.get_text(strip=True) or href
+                        if href:
+                            local_inline.append({"type": "text", "text": label,
+                                                 "marks": [{"type": "link", "attrs": {"href": href}}]})
+                        elif label:
+                            local_inline.append({"type": "text", "text": label})
+                    elif cname == "span":
+                        style = (child.get("style") or "").lower()
+                        is_mono = any(k in style for k in ("monospace", "courier", "consolas"))
+                        if is_mono:
+                            # Flush paragraph so far, emit code block, continue
+                            if local_inline:
+                                adf_content.append({"type": "paragraph", "content": local_inline.copy()})
+                                local_inline.clear()
+                            raw = child.get_text().replace("\xa0", " ").strip()
+                            if raw:
+                                adf_content.append({
+                                    "type": "codeBlock",
+                                    "attrs": {"language": ""},
+                                    "content": [{"type": "text", "text": raw}]
+                                })
+                        else:
+                            t = child.get_text()
+                            if t.strip():
+                                local_inline.append({"type": "text", "text": t})
+                    elif cname == "img":
+                        src = (child.get("src") or "").strip()
+                        if local_inline:
+                            adf_content.append({"type": "paragraph", "content": local_inline.copy()})
+                            local_inline.clear()
+                        if src and ATTACH_URL_SUBSTR in src:
+                            lf = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+                            if lf:
+                                up = jira_upload_attachment(issue_key, lf, wi_id=wi_id)
+                                if up and up.get("id"):
+                                    adf_content.append({
+                                        "type": "mediaSingle",
+                                        "content": [{"type": "media", "attrs": {
+                                            "type": "external",
+                                            "url": f"{JIRA_URL}/rest/api/2/attachment/content/{up['id']}",
+                                            "width": 710, "height": 163
+                                        }}]
+                                    })
+                        elif src:
+                            local_inline.append({"type": "text", "text": src,
+                                                 "marks": [{"type": "link", "attrs": {"href": src}}]})
+                    else:
+                        t = child.get_text()
+                        if t.strip():
+                            local_inline.append({"type": "text", "text": t})
+            if local_inline:
+                adf_content.append({"type": "paragraph", "content": local_inline})
+            return
+
+        if name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            flush_inline()
+            level = int(name[1])
+            text = node.get_text(strip=True)
+            if text:
+                adf_content.append({
+                    "type": "heading",
+                    "attrs": {"level": level},
+                    "content": [{"type": "text", "text": text}]
+                })
+            return
+
+        if name in ("ul", "ol"):
+            flush_inline()
+            list_type = "bulletList" if name == "ul" else "orderedList"
+            items = []
+            for li in node.find_all("li", recursive=False):
+                t = li.get_text(strip=True)
+                if t:
+                    items.append({
+                        "type": "listItem",
+                        "content": [{"type": "paragraph",
+                                     "content": [{"type": "text", "text": t}]}]
+                    })
+            if items:
+                adf_content.append({"type": list_type, "content": items})
+            return
+
+        # ---- DIV — recurse into children (divs are generic containers) ----
+        if name == "div":
+            # Check if the div itself is a code-style block
+            style = (node.get("style") or "").lower()
+            is_mono = any(k in style for k in ("monospace", "courier", "consolas"))
+            if is_mono:
+                flush_inline()
+                raw = node.get_text().replace("\xa0", " ").strip()
+                if raw:
+                    adf_content.append({
+                        "type": "codeBlock",
+                        "attrs": {"language": ""},
+                        "content": [{"type": "text", "text": raw}]
+                    })
+                return
+            flush_inline()
+            for child in node.children:
+                walk(child)
+            flush_inline()
+            return
+
+        # ---- Everything else — recurse ----
+        for child in node.children:
+            walk(child)
+
+    # Walk all top-level nodes
+    for top in soup.contents:
+        walk(top)
+
+    # Flush any remaining inline content
+    flush_inline()
 
     if not adf_content:
         adf_content = [{"type": "paragraph", "content": []}]
 
-    return {
-        "type": "doc",
-        "version": 1,
-        "content": adf_content
-    }
+    return {"type": "doc", "version": 1, "content": adf_content}
 
 # ============================================================================
 # END OF TABLE CONVERSION FUNCTIONS
@@ -1215,8 +1747,8 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         full_summary_text = f"*Full Summary :*\n\n{full_summary}\n\n"
         raw_desc = full_summary_text + (raw_desc or "")
 
-    ado_type = f.get("System.WorkItemType", "Task")
-    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Task")
+    ado_type = f.get("System.WorkItemType", "Defect")
+    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Defect")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
     tags = f.get("System.Tags", "")
@@ -1260,11 +1792,11 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Due Date", "Failed", str(e)[:100])
 
     # Use simplified approach - just add to build_jira_fields_from_ado()
-    proposed_fix = f.get("Microsoft.VSTS.CMMI.ProposedFix")
-    if proposed_fix:
-        clean_html_val = clean_html_to_text(proposed_fix)
-        fields["customfield_12787"] = to_adf_doc(clean_html_val)
-        log_to_excel(wi_id, None, "Proposed Fix", "Success", f"Length: {len(clean_html_val)}")
+    # proposed_fix = f.get("Microsoft.VSTS.CMMI.ProposedFix")
+    # if proposed_fix:
+    #     clean_html_val = clean_html_to_text(proposed_fix)
+    #     fields["customfield_12787"] = to_adf_doc(clean_html_val)
+    #     log_to_excel(wi_id, None, "Proposed Fix", "Success", f"Length: {len(clean_html_val)}")
 
     # Priority Rank
     priority_rank = f.get("Custom.PriorityRank")
@@ -1983,9 +2515,23 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         name = node.name.lower() if node.name else ""
         if name == "img":
             flush_text()
-            src = node.get("src", "").strip()
+            src = (node.get("src") or "").strip()
             if src:
-                parts.append({"kind": "image", "src": src})
+                if src.startswith("data:"):
+                    try:
+                        import base64, uuid
+                        header, b64data = src.split(",", 1)
+                        mime = header.split(":")[1].split(";")[0]
+                        ext = mime.split("/")[1]
+                        filename = f"inline_image_{uuid.uuid4().hex[:8]}.{ext}"
+                        local_path = os.path.join(OUTPUT_DIR, filename)
+                        with open(local_path, "wb") as f:
+                            f.write(base64.b64decode(b64data))
+                        parts.append({"kind": "image_local", "path": local_path, "filename": filename})
+                    except Exception as e:
+                        log(f"   ⚠️ Failed to decode base64 image: {e}")
+                else:
+                    parts.append({"kind": "image", "src": src})
             return
         if name == "a":
             href = (node.get("href") or "").strip()
@@ -2002,9 +2548,36 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         if name == "br":
             text_buf.append("\n")
             return
+        # ---- TABLE → render as Jira wiki markup ----
+        if name == "table":
+            flush_text()
+            jira_table_lines = []
+            for tr in node.find_all("tr"):
+                cells = tr.find_all(["td", "th"])
+                if not cells:
+                    continue
+                # Determine if any cell is a <th> or it's the first row → header row
+                is_header = any(c.name == "th" for c in cells)
+                row_parts = []
+                for cell in cells:
+                    cell_text = cell.get_text(separator=" ", strip=True).replace("|", "\\|")
+                    # Bold the text if it's a th
+                    if cell.name == "th" or (cell.find("strong") or cell.find("b")):
+                        cell_text = f"*{cell_text}*" if cell_text else " "
+                    if not cell_text:
+                        cell_text = " "
+                    row_parts.append(cell_text)
+                if is_header:
+                    jira_table_lines.append("||" + "||".join(row_parts) + "||")
+                else:
+                    jira_table_lines.append("|" + "|".join(row_parts) + "|")
+            if jira_table_lines:
+                parts.append({"kind": "text", "value": "\n".join(jira_table_lines)})
+            return
+
         is_block = name in {"p", "div", "li", "ul", "ol",
                              "h1", "h2", "h3", "h4", "h5", "h6",
-                             "blockquote", "table", "tr", "td", "th"}
+                             "blockquote"}
         if is_block:
             flush_text()
             for child in node.children if hasattr(node, 'children') else []:
@@ -2014,28 +2587,30 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         for child in node.children if hasattr(node, 'children') else []:
             walk(child)
 
+
     for top in soup.contents:
         walk(top)
     flush_text()
     return parts
 
 
-def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
-    if not text:
-        return []
+# ============================================================
+# IMPROVED COMMENT HANDLING — format detection, image extraction,
+# malformed link fixing, link deduplication
+# ============================================================
 
-    resolved_text = _resolve_markdown_mentions(text, mention_map)
-    resolved_text = _convert_markdown_to_jira_wiki(resolved_text)
-    resolved_text = resolved_text.strip()
-    if resolved_text:
-        return [{"kind": "text", "value": resolved_text}]
-    return []
+def detect_comment_format(comment: Dict) -> tuple:
+    """
+    Detect comment format and return (format_type, raw_text, rendered_text).
 
+    PRIORITY: HTML > Markdown > Plain text.
+    Prefers HTML when raw_text OR rendered_text looks like HTML to avoid
+    raw HTML tags being passed through the markdown pipeline as literal text.
 
-def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_index: int = 0,
-                              author: str = "Unknown", created_str: str = ""):
-    meta_line = f"*Originally commented by {author} on {created_str}*"
-
+    Key case: ADO sometimes stores raw HTML in the `text` field but sets
+    `format` to "markdown" or "text". We detect this by checking if raw_text
+    itself contains HTML block-level tags (div, img, br, a, etc.).
+    """
     comment_format = comment.get("format", "html").lower()
     raw_text = comment.get("text", "")
     rendered_text = comment.get("renderedText", "")
@@ -2043,107 +2618,314 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     def _looks_like_html(text: str) -> bool:
         return bool(re.search(r'<[a-zA-Z][^>]*>', text or ""))
 
-    if comment_format == "markdown":
-        if not raw_text or not raw_text.strip():
-            _post_text_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
-            update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (empty markdown body)")
-            return
+    def _looks_like_block_html(text: str) -> bool:
+        """Stronger check — raw_text contains block-level HTML tags like <div>, <img>, <br>."""
+        return bool(re.search(r'<(div|img|br|p|table|ul|ol|li|h[1-6]|a\s)[^>]*>', text or "", re.IGNORECASE))
 
-        log(f"   🔍 Resolving mentions for comment {comment_index}...")
-        mention_map = _build_mention_map_from_comment(comment)
-        parts = _parse_comment_markdown(raw_text, mention_map)
+    def _looks_like_markdown(text: str) -> bool:
+        return bool(re.search(r'(!\[|!\(|\*\*|\*[^*]|_[^_])', text or ""))
 
-    elif comment_format == "html" or _looks_like_html(rendered_text) or _looks_like_html(raw_text):
-        html_content = rendered_text.strip() or raw_text.strip()
-        if not html_content:
-            _post_text_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
-            update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (empty HTML body)")
-            return
-        parts = _parse_comment_html(html_content)
+    if comment_format == "html":
+        return ("html", raw_text, rendered_text)
 
-    else:
-        if not raw_text or not raw_text.strip():
+    # If rendered_text looks like HTML, always use HTML path —
+    # prevents duplicate links from markdown parsing
+    if _looks_like_html(rendered_text):
+        return ("html", raw_text, rendered_text)
+
+    # KEY FIX: If raw_text itself is raw HTML (e.g. ADO stores <div>...<img>...<a>
+    # in the text field but marks format as "markdown" or "text"), route to HTML parser.
+    # Without this, the markdown pipeline passes the raw HTML through as literal text.
+    if _looks_like_block_html(raw_text):
+        return ("html", raw_text, raw_text)
+
+    if comment_format == "markdown" and _looks_like_markdown(raw_text):
+        return ("markdown", raw_text, rendered_text)
+
+    if _looks_like_markdown(raw_text) and not _looks_like_html(raw_text):
+        return ("markdown", raw_text, rendered_text)
+
+    return ("plain", raw_text, rendered_text)
+
+
+def _fix_ado_malformed_markdown_links(text: str) -> str:
+    """
+    Fix ADO's malformed markdown links.
+
+    ADO produces several broken link patterns:
+
+    1. Title-escaped:   [text](url &quot;url&quot;)  → [text](url)
+    2. Angle+paren:     <[display_url>](real_url> "lower_url")
+                        The display text starts with the URL and ends with >
+                        The href has a trailing %3E (encoded >)
+                        These appear THREE times for the same URL — collapse to one clean link.
+
+    Example raw (after html.unescape):
+        <[https://dev.azure.com/.../results>](https://dev.azure.com/.../results> "https://dev.azure.com/.../results%3e")
+    Should become:
+        [https://dev.azure.com/.../results](https://dev.azure.com/.../results)
+    """
+    import html as html_lib
+
+    # Step 1: unescape HTML entities so we can work with real chars
+    text = html_lib.unescape(text)
+
+    # Step 2: collapse the ADO angle-bracket triple-link pattern.
+    # Pattern: literal < then [display_ending_with_>](href_ending_with_> or %3E optional_title)
+    # We want to emit a single clean [URL](URL).
+    angle_triple = re.compile(
+        r'<\[([^\]]+?)>?\]\([^\)]*?\)',
+        re.DOTALL
+    )
+
+    def fix_angle_triple(m):
+        # Extract the clean URL from the display text (strip trailing >)
+        display = m.group(1).rstrip('>').strip()
+        # Only treat as a URL link if it looks like a URL
+        if display.startswith('http'):
+            return f'[{display}]({display})'
+        return m.group(0)  # leave unchanged if not a URL
+
+    text = angle_triple.sub(fix_angle_triple, text)
+
+    # Step 3: fix remaining title-escaped links: [text](url "title") or [text](url &quot;title&quot;)
+    # After unescaping step 1, &quot; becomes " so both cases reduce to [text](url "title")
+    title_pattern = re.compile(r'\[([^\]]+)\]\((\S+)\s+"[^"]*"\)')
+
+    def fix_title_link(m):
+        link_text = m.group(1)
+        url = m.group(2).rstrip('>').strip()
+        return f'[{link_text}]({url})'
+
+    text = title_pattern.sub(fix_title_link, text)
+
+    return text
+
+
+def _deduplicate_links_in_parts(parts: List[Dict]) -> None:
+    """
+    Deduplicate Jira-style [text|url] links across text parts — modifies in-place.
+    Once a URL has been seen, subsequent occurrences are removed.
+    """
+    seen_links: Dict[str, str] = {}
+
+    for part in parts:
+        if part["kind"] != "text":
+            continue
+
+        text = part["value"]
+        link_pattern = r'\[([^\]]+)\|([^\]]+)\]'
+
+        def replace_link(match):
+            display = match.group(1)
+            url = match.group(2)
+            if url in seen_links:
+                return ""
+            seen_links[url] = display
+            return match.group(0)
+
+        deduplicated = re.sub(link_pattern, replace_link, text)
+        deduplicated = re.sub(r' +', ' ', deduplicated)
+        deduplicated = re.sub(r'\n\n+', '\n\n', deduplicated)
+        part["value"] = deduplicated.strip()
+
+
+def _parse_comment_markdown_improved(text: str, mention_map: Dict[str, str]) -> List[Dict]:
+    """
+    Parse markdown comment into parts, extracting inline images separately.
+    Also fixes malformed ADO links and resolves @mentions.
+    """
+    if not text:
+        return []
+
+    parts: List[Dict] = []
+
+    # Fix ADO's malformed link patterns; this also unescapes HTML entities internally
+    text = _fix_ado_malformed_markdown_links(text)
+
+    # Extract inline images: ![alt](url)
+    image_pattern = r'!\[([^\]]*)\]\(([^)]+)\)'
+
+    last_end = 0
+    for match in re.finditer(image_pattern, text):
+        text_before = text[last_end:match.start()]
+        if text_before.strip():
+            resolved = _resolve_markdown_mentions(text_before, mention_map)
+            resolved = _convert_markdown_to_jira_wiki(resolved)
+            if resolved.strip():
+                parts.append({"kind": "text", "value": resolved.strip()})
+
+        image_url = match.group(2).strip()
+        if image_url:
+            parts.append({"kind": "image", "src": image_url})
+
+        last_end = match.end()
+
+    # Remaining text after last image
+    text_after = text[last_end:]
+    if text_after.strip():
+        resolved = _resolve_markdown_mentions(text_after, mention_map)
+        resolved = _convert_markdown_to_jira_wiki(resolved)
+        if resolved.strip():
+            parts.append({"kind": "text", "value": resolved.strip()})
+
+    # If no images found at all, return the whole thing as one text part
+    if not parts:
+        resolved_text = _resolve_markdown_mentions(text, mention_map)
+        resolved_text = _convert_markdown_to_jira_wiki(resolved_text)
+        if resolved_text.strip():
+            return [{"kind": "text", "value": resolved_text.strip()}]
+
+    _deduplicate_links_in_parts(parts)
+    return parts
+
+
+def build_comment_body_with_images(parts: List[Dict], image_url_map: Dict[str, str],
+                                    meta_line: str, issue_key: str = None) -> str:
+    """
+    Assemble the final Jira comment body, interleaving text and uploaded images
+    in the order they appeared in the original comment.
+    """
+    body_parts: List[str] = [meta_line]
+
+    for p in parts:
+        if p["kind"] == "text":
+            txt = p["value"].strip()
+            if txt:
+                txt = re.sub(r'\n{3,}', '\n\n', txt)
+                body_parts.append(txt)
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
+            if jira_url:
+                body_parts.append(f"!{jira_url}!")
+            else:
+                body_parts.append(f"[Image failed to load]")
+
+    return "\n\n".join(body_parts).strip()
+
+
+def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_index: int = 0,
+                              author: str = "Unknown", created_str: str = ""):
+    """
+    Process and post an ADO comment to Jira.
+    Handles HTML/markdown format detection, inline image download+upload,
+    URL deduplication, and @mention resolution.
+    """
+    meta_line = f"*Originally commented by {author} on {created_str}*"
+
+    comment_format, raw_text, rendered_text = detect_comment_format(comment)
+
+    log(f"   💬 Comment[{comment_index}]: format={comment_format}, has_content={bool(raw_text or rendered_text)}")
+
+    # Empty comment — post meta-line only
+    if not raw_text or not raw_text.strip():
+        if not rendered_text or not rendered_text.strip():
             _post_text_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
             update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (empty body)")
             return
 
-        log(f"   🔍 Resolving mentions for comment {comment_index}...")
+    # Parse based on detected format
+    if comment_format == "markdown":
+        log(f"   🔍 Resolving mentions for comment {comment_index} (markdown)...")
         mention_map = _build_mention_map_from_comment(comment)
-        parts = _parse_comment_markdown(raw_text, mention_map)
+        parts = _parse_comment_markdown_improved(raw_text, mention_map)
+
+    elif comment_format == "html":
+        parts = _parse_comment_html(rendered_text or raw_text)
+
+    else:  # plain text — run through markdown improved for mention resolution
+        log(f"   🔍 Resolving mentions for comment {comment_index} (plain)...")
+        mention_map = _build_mention_map_from_comment(comment)
+        parts = _parse_comment_markdown_improved(raw_text, mention_map)
 
     if not parts:
         _post_text_comment(issue_key, meta_line, wi_id=wi_id, comment_index=comment_index)
-        update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (no parseable content)")
+        update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (no content)")
         return
 
-    has_images = any(p["kind"] == "image" for p in parts)
+    has_images = any(p["kind"] in ("image", "image_local") for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
-    log(f"   💬 Comment[{comment_index}]: {len(parts)} parts | images={sum(1 for p in parts if p['kind'] == 'image')} | text={has_text}")
+    log(f"   📝 Comment[{comment_index}]: {len(parts)} parts | text={has_text} | images={sum(1 for p in parts if p['kind'] == 'image')}")
 
+    # No images — post as plain text comment
     if not has_images:
         full_text = "\n\n".join(p["value"] for p in parts if p["kind"] == "text").strip()
         body = f"{meta_line}\n\n{full_text}" if full_text else meta_line
         _post_text_comment(issue_key, body, wi_id=wi_id, comment_index=comment_index)
         update_wi_row(wi_id, f"Comment[{comment_index}]", "Success",
-                      f"Text-only comment posted ({len(body)} chars)")
+                      f"Text-only ({len(body)} chars)")
         return
 
+    # Has images — download from ADO and upload to Jira
     image_url_map: Dict[str, str] = {}
     img_upload_count = 0
     img_fail_count = 0
 
     for p in parts:
-        if p["kind"] != "image":
+        if p["kind"] not in ("image", "image_local"):
             continue
-        src = p["src"]
-        if src in image_url_map:
+
+        if p["kind"] == "image_local":
+            src_key = p["path"]
+            local_file = p["path"]
+            filename = p["filename"]
+        else:
+            src_key = p["src"]
+            if src_key in image_url_map:
+                continue
+            parsed_url = urlparse(src_key)
+            query = parse_qs(parsed_url.query or "")
+            filename = query.get("fileName", [f"image_{comment_index}.png"])[0]
+            log(f"   📥 Downloading image: {filename}")
+            local_file = download_images_to_ado_attachments(src_key)
+
+        if src_key in image_url_map:
             continue
-        filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
-        local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+
         if not local_file:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
             continue
-        upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+
+        log(f"   📤 Uploading image to Jira: {filename}")
+        upload_info = jira_upload_attachment(issue_key, local_file)
+
         if upload_info and upload_info.get("content"):
-            image_url_map[src] = upload_info["content"]
+            image_url_map[src_key] = upload_info["content"]
             img_upload_count += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
-            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
             img_upload_count += 1
         else:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
 
-    body_parts: List[str] = [meta_line]
-    for p in parts:
-        if p["kind"] == "text":
-            txt = p["value"].strip()
-            if txt:
-                body_parts.append(txt)
-        elif p["kind"] == "image":
-            jira_url = image_url_map.get(p["src"])
-            if jira_url:
-                body_parts.append(f"!{jira_url}!")
-            else:
-                body_parts.append("[Image could not be loaded]")
+        try:
+            if os.path.exists(local_file):
+                os.remove(local_file)
+        except Exception:
+            pass
 
-    final_body = "\n\n".join(body_parts).strip()
+    # Build and post final comment body with images interleaved
+    final_body = build_comment_body_with_images(parts, image_url_map, meta_line, issue_key)
+
     comment_url = f"{clean_base(JIRA_URL)}/rest/api/2/issue/{issue_key}/comment"
     headers = {"Accept": "application/json", "Content-Type": "application/json"}
     r = api_request("post", comment_url, wi_id=wi_id, issue_key=issue_key,
                     step=f"Post Comment[{comment_index}]",
                     auth=jira_auth(), headers=headers, json={"body": final_body})
+
     if r.status_code in (200, 201):
-        log(f"   ✅ Comment[{comment_index}] posted ({img_upload_count} images, {img_fail_count} failed)")
+        log(f"   ✅ Comment[{comment_index}] posted ({img_upload_count} images OK, {img_fail_count} failed)")
         update_wi_row(wi_id, f"Comment[{comment_index}]", "Success",
-                      f"Posted: {img_upload_count} images OK, {img_fail_count} failed")
+                      f"Text + {img_upload_count} images")
     else:
-        log(f"   ❌ Comment[{comment_index}] post failed: {r.status_code} {r.text[:200]}")
+        log(f"   ❌ Comment[{comment_index}] failed: {r.status_code}")
         update_wi_row(wi_id, f"Comment[{comment_index}]", "Failed",
-                      f"HTTP {r.status_code}: {r.text[:80]}")
+                      f"HTTP {r.status_code}")
 
 
 def _post_text_comment(issue_key: str, body: str, wi_id=None, comment_index: int = 0):
@@ -2293,7 +3075,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = None
+    SPECIFIC_ID = ["843714"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2408,6 +3190,27 @@ def migrate_all():
             mapping[wi_id_str] = issue_key
             with open(MAPPING_FILE, "w") as f:
                 json.dump(mapping, f, indent=2)
+
+            # 5b) Proposed Fix — needs issue_key for image upload
+            try:
+                proposed_fix_html = wi.get("fields", {}).get("Microsoft.VSTS.CMMI.ProposedFix", "")
+                if proposed_fix_html:
+                    proposed_fix_adf = improved_process_description_to_adf(
+                        issue_key, proposed_fix_html, wi_id=wi_id)
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update Proposed Fix", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_12787": proposed_fix_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Success", "Proposed Fix updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Skipped", "No Proposed Fix")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Error", str(e)[:100])
 
             # 6) Transition
             try:
