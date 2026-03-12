@@ -923,24 +923,49 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
 
         # ---- Inline formatting tags — accumulate into buffer ----
         if name in ("b", "strong"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "strong"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "strong"}]})
+            else:
+                # Has non-text children (e.g. <img>) — recurse so they aren't dropped
+                for child in node.children:
+                    walk(child)
             return
 
         if name in ("i", "em"):
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "em"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "em"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "u":
-            text = node.get_text()
-            if text.strip():
-                inline_buf.append({"type": "text", "text": text,
-                                   "marks": [{"type": "underline"}]})
+            text_only_children = all(
+                isinstance(c, NavigableString) or (isinstance(c, Tag) and c.name in ("br",))
+                for c in node.children
+            )
+            if text_only_children:
+                text = node.get_text()
+                if text.strip():
+                    inline_buf.append({"type": "text", "text": text,
+                                    "marks": [{"type": "underline"}]})
+            else:
+                for child in node.children:
+                    walk(child)
             return
 
         if name == "a":
@@ -2094,7 +2119,23 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
             flush_text()
             src = node.get("src", "").strip()
             if src:
-                parts.append({"kind": "image", "src": src})
+                if src.startswith("data:"):
+                    # Inline base64 image — decode and save locally
+                    try:
+                        import base64, uuid
+                        header, b64data = src.split(",", 1)
+                        # e.g. "data:image/jpeg;base64"
+                        mime = header.split(":")[1].split(";")[0]  # e.g. "image/jpeg"
+                        ext = mime.split("/")[1]  # e.g. "jpeg"
+                        filename = f"inline_image_{uuid.uuid4().hex[:8]}.{ext}"
+                        local_path = os.path.join(OUTPUT_DIR, filename)
+                        with open(local_path, "wb") as f:
+                            f.write(base64.b64decode(b64data))
+                        parts.append({"kind": "image_local", "path": local_path, "filename": filename})
+                    except Exception as e:
+                        log(f"   ⚠️ Failed to decode base64 image: {e}")
+                else:
+                    parts.append({"kind": "image", "src": src})
             return
         if name == "a":
             href = (node.get("href") or "").strip()
@@ -2111,9 +2152,36 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
         if name == "br":
             text_buf.append("\n")
             return
+        # ---- TABLE → render as Jira wiki markup ----
+        if name == "table":
+            flush_text()
+            jira_table_lines = []
+            for tr in node.find_all("tr"):
+                cells = tr.find_all(["td", "th"])
+                if not cells:
+                    continue
+                # Determine if any cell is a <th> or it's the first row → header row
+                is_header = any(c.name == "th" for c in cells)
+                row_parts = []
+                for cell in cells:
+                    cell_text = cell.get_text(separator=" ", strip=True).replace("|", "\\|")
+                    # Bold the text if it's a th
+                    if cell.name == "th" or (cell.find("strong") or cell.find("b")):
+                        cell_text = f"*{cell_text}*" if cell_text else " "
+                    if not cell_text:
+                        cell_text = " "
+                    row_parts.append(cell_text)
+                if is_header:
+                    jira_table_lines.append("||" + "||".join(row_parts) + "||")
+                else:
+                    jira_table_lines.append("|" + "|".join(row_parts) + "|")
+            if jira_table_lines:
+                parts.append({"kind": "text", "value": "\n".join(jira_table_lines)})
+            return
+
         is_block = name in {"p", "div", "li", "ul", "ol",
                              "h1", "h2", "h3", "h4", "h5", "h6",
-                             "blockquote", "table", "tr", "td", "th"}
+                             "blockquote"}
         if is_block:
             flush_text()
             for child in node.children if hasattr(node, 'children') else []:
@@ -2207,7 +2275,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
         update_wi_row(wi_id, f"Comment[{comment_index}]", "Success", "Meta-only (no parseable content)")
         return
 
-    has_images = any(p["kind"] == "image" for p in parts)
+    has_images = any(p["kind"] in ("image", "image_local") for p in parts)
     has_text = any(p["kind"] == "text" for p in parts)
 
     # CODE 1 logs more detail here:
@@ -2227,32 +2295,40 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     img_fail_count = 0
 
     for p in parts:
-        if p["kind"] != "image":
+        if p["kind"] not in ("image", "image_local"):
             continue
-        src = p["src"]
-        if src in image_url_map:
+        
+        if p["kind"] == "image_local":
+            local_file = p["path"]
+            src_key = p["path"]  # use path as the dedup key
+        else:
+            src = p["src"]
+            src_key = src
+            if src_key in image_url_map:
+                continue
+            filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
+            local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+        
+        if src_key in image_url_map:
             continue
-        # CODE 1 also extracts filename from query params here (same as Code 2):
-        filename = parse_qs(urlparse(src).query or "").get("fileName", [f"image_{comment_index}.png"])[0]
-
-        # CODE 1 uses ado_download_attachment() (with retries and logging) instead of
-        # download_images_to_ado_attachments() used here:
-        local_file = download_images_to_ado_attachments(src, wi_id=wi_id, issue_key=issue_key)
+            
         if not local_file:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
             continue
+            
         upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
         if upload_info and upload_info.get("content"):
-            image_url_map[src] = upload_info["content"]
+            image_url_map[src_key] = upload_info["content"]
             img_upload_count += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
-            image_url_map[src] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
+            image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
             img_upload_count += 1
         else:
             img_fail_count += 1
-            image_url_map[src] = None
+            image_url_map[src_key] = None
+
 
         # CODE 1 also deletes the local temp file after upload:
         # try:
@@ -2270,8 +2346,9 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
             txt = p["value"].strip()
             if txt:
                 body_parts.append(txt)
-        elif p["kind"] == "image":
-            jira_url = image_url_map.get(p["src"])
+        elif p["kind"] in ("image", "image_local"):
+            key = p.get("src") or p.get("path")
+            jira_url = image_url_map.get(key)
             if jira_url:
                 body_parts.append(f"!{jira_url}!")
             else:
@@ -2440,7 +2517,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["879751"]
+    SPECIFIC_ID = ["830764"]
 
     # CODE 1 uses SPECIFIC_ID = ["845200"] to run a single targeted work item for debugging.
     # Code 2 sets SPECIFIC_ID = None to process all matched items.
