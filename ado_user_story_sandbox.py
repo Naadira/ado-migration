@@ -1112,15 +1112,26 @@ def improved_process_description_to_adf(issue_key: str, raw_html: str, wi_id=Non
         if name in ("ul", "ol"):
             flush_inline()
             list_type = "bulletList" if name == "ul" else "orderedList"
-            items = []
-            for li in node.find_all("li", recursive=False):
-                t = li.get_text(strip=True)
-                if t:
-                    items.append({
-                        "type": "listItem",
-                        "content": [{"type": "paragraph",
-                                     "content": [{"type": "text", "text": t}]}]
-                    })
+
+            def collect_list_items(list_node):
+                items = []
+                for child in list_node.children:
+                    if isinstance(child, Tag):
+                        cname = (child.name or "").lower()
+                        if cname == "li":
+                            t = child.get_text(strip=True)
+                            if t:
+                                items.append({
+                                    "type": "listItem",
+                                    "content": [{"type": "paragraph",
+                                                 "content": [{"type": "text", "text": t}]}]
+                                })
+                        elif cname in ("ul", "ol"):
+                            # Recurse into nested list wrapper like <ul><ol><li>
+                            items.extend(collect_list_items(child))
+                return items
+
+            items = collect_list_items(node)
             if items:
                 adf_content.append({"type": list_type, "content": items})
             return
@@ -1722,15 +1733,6 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             log_to_excel(wi_id, None, "Priority", "Error", str(e)[:100])
     else:
         log_to_excel(wi_id, None, "Priority", "Skipped", "No priority mapping")
-
-    # Acceptance Criteria
-    # CODE 1 DIFFERENCE — Code 1 does NOT map AcceptanceCriteria (customfield_11880).
-    # Bug work items in Code 1 do not use AcceptanceCriteria; it is a User Story field.
-    acceptance_criteria = f.get("Microsoft.VSTS.Common.AcceptanceCriteria")
-    if acceptance_criteria:
-        clean_html_val = clean_html_to_text(acceptance_criteria)
-        fields["customfield_11880"] = to_adf_doc(clean_html_val)
-        log_to_excel(wi_id, None, "Acceptance Criteria", "Success", f"Length: {len(clean_html_val)}")
 
     # Reporter
     created_by = f.get("System.CreatedBy")
@@ -2745,7 +2747,7 @@ def migrate_all():
     # CODE 1 DIFFERENCE — Code 1 sets SPECIFIC_ID = ["845200"] to target a single work item
     # for a focused test/debug run. Code 2 sets SPECIFIC_ID = None to process all found IDs.
     # Code 1 also sets MAX_TO_PROCESS = 1000 while Code 2 uses 10000.
-    SPECIFIC_ID = ["490341"]
+    SPECIFIC_ID = ["768902"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2882,6 +2884,27 @@ def migrate_all():
             with open(MAPPING_FILE, "w") as f:
                 json.dump(mapping, f, indent=2)
 
+            # 5b) Acceptance Criteria
+            try:
+                acceptance_criteria_html = wi.get("fields", {}).get("Microsoft.VSTS.Common.AcceptanceCriteria", "")
+                if acceptance_criteria_html:
+                    ac_adf = improved_process_description_to_adf(
+                        issue_key, acceptance_criteria_html, wi_id=wi_id)
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update AcceptanceCriteria", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_11880": ac_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update AcceptanceCriteria", "Success", "Acceptance Criteria updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update AcceptanceCriteria", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update AcceptanceCriteria", "Skipped", "No Acceptance Criteria")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update AcceptanceCriteria", "Error", str(e)[:100])
+                
             # 6) Transition
             try:
                 ado_state = wi.get("fields", {}).get("System.State", "New")
