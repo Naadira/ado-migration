@@ -1754,7 +1754,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Release Occurred
     release_occurred = f.get("Custom.ReleaseOccurred")
     if release_occurred is not None:
-        fields["customfield_12715"] = release_occurred
+        fields["customfield_12944"] = str(release_occurred)
         log_to_excel(wi_id, None, "ReleaseOccurred", "Success", release_occurred)
 
     # Application (Multi Select)
@@ -2640,7 +2640,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["878759"]
+    SPECIFIC_ID = ["880260"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
