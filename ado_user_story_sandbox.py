@@ -2434,17 +2434,41 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
 # Code 2's _parse_comment_markdown does none of the above: it only resolves mentions and
 # applies the two-regex bold/italic conversion, with no image extraction, no link fixing,
 # and no deduplication.
+IMAGE_MD_RE = re.compile(r'!\[[^\]]*\]\(([^)]+)\)')
+
 def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
     if not text:
         return []
 
+    # Unescape HTML entities first (Code 1 difference)
+    import html as html_lib
+    text = html_lib.unescape(text)
+
     resolved_text = _resolve_markdown_mentions(text, mention_map)
     resolved_text = _convert_markdown_to_jira_wiki(resolved_text)
-    resolved_text = resolved_text.strip()
-    if resolved_text:
-        return [{"kind": "text", "value": resolved_text}]
-    return []
 
+    parts: List[Dict] = []
+    last_end = 0
+
+    for m in IMAGE_MD_RE.finditer(resolved_text):
+        # Text before the image
+        before = resolved_text[last_end:m.start()].strip()
+        if before:
+            parts.append({"kind": "text", "value": before})
+        # The image URL
+        img_url = m.group(1).strip()
+        parts.append({"kind": "image", "src": img_url})
+        last_end = m.end()
+
+    # Remaining text after last image
+    after = resolved_text[last_end:].strip()
+    if after:
+        parts.append({"kind": "text", "value": after})
+
+    if not parts and resolved_text.strip():
+        parts.append({"kind": "text", "value": resolved_text.strip()})
+
+    return parts
 
 # CODE 1 DIFFERENCE — Code 1 has a more sophisticated process_comment_and_post that
 # uses a separate detect_comment_format() helper function instead of the inline format
@@ -2747,7 +2771,7 @@ def migrate_all():
     # CODE 1 DIFFERENCE — Code 1 sets SPECIFIC_ID = ["845200"] to target a single work item
     # for a focused test/debug run. Code 2 sets SPECIFIC_ID = None to process all found IDs.
     # Code 1 also sets MAX_TO_PROCESS = 1000 while Code 2 uses 10000.
-    SPECIFIC_ID = ["768902"]
+    SPECIFIC_ID = ["877273"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
