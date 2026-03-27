@@ -1479,14 +1479,50 @@ def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id
     soup = BeautifulSoup(repro_html, "html.parser")
     for img in soup.find_all("img"):
         src = img.get("src")
-        if src and ATTACH_URL_SUBSTR in src and src not in attachment_map:
+        if not src or src in attachment_map:
+            continue
+
+        if ATTACH_URL_SUBSTR in src:
+            # Existing ADO attachment handling
             filename = parse_qs(urlparse(src).query or "").get("fileName", ["attachment.png"])[0]
             local_file = ado_download_attachment(src, filename, wi_id=wi_id, issue_key=issue_key)
-            if not local_file:
-                continue
-            upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
-            if upload_info and upload_info.get("id"):
-                attachment_map[src] = upload_info["id"]
+        else:
+            # NEW: Handle external image URLs (e.g. tpondemand.com, etc.)
+            try:
+                parsed = urlparse(src)
+                filename = os.path.basename(parsed.path) or f"external_image_{len(attachment_map)}.png"
+                filename = sanitize_filename(filename)
+                if not os.path.splitext(filename)[1]:
+                    filename += ".png"
+                ensure_dir(ATTACH_DIR)
+                local_path = unique_path(ATTACH_DIR, filename)
+                log(f"   📥 Downloading external image: {src}")
+                r = requests.get(src, timeout=15, stream=True)
+                if r.status_code == 200:
+                    with open(local_path, "wb") as f:
+                        for chunk in r.iter_content(8192):
+                            if chunk:
+                                f.write(chunk)
+                    local_file = local_path
+                    log(f"   ✅ Downloaded external image: {filename}")
+                else:
+                    log(f"   ⚠️ Failed to download external image ({r.status_code}): {src}")
+                    local_file = None
+            except Exception as e:
+                log(f"   ⚠️ Error downloading external image {src}: {e}")
+                local_file = None
+
+        if not local_file:
+            continue
+        upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+        if upload_info and upload_info.get("id"):
+            attachment_map[src] = upload_info["id"]
+        try:
+            if local_file and os.path.exists(local_file):
+                os.remove(local_file)
+        except Exception:
+            pass
+
     return attachment_map
 
 
@@ -3048,7 +3084,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["477478"]
+    SPECIFIC_ID = ["477266", "477517"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -3164,6 +3200,28 @@ def migrate_all():
             mapping[wi_id_str] = issue_key
             with open(MAPPING_FILE, "w") as f:
                 json.dump(mapping, f, indent=2)
+
+            # 5b) Proposed Fix — needs issue_key for image upload
+            try:
+                proposed_fix_html = wi.get("fields", {}).get("Microsoft.VSTS.CMMI.ProposedFix", "")
+                if proposed_fix_html:
+                    proposed_fix_adf = improved_process_description_to_adf(
+                        issue_key, proposed_fix_html, wi_id=wi_id)
+                    base = clean_base(JIRA_URL)
+                    url = f"{base}/rest/api/3/issue/{issue_key}"
+                    r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
+                                    step="Update Proposed Fix", auth=jira_auth(),
+                                    headers={"Content-Type": "application/json"},
+                                    json={"fields": {"customfield_12787": proposed_fix_adf}})
+                    if r.status_code in (200, 204):
+                        log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Success", "Proposed Fix updated")
+                    else:
+                        log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Failed", f"HTTP {r.status_code}")
+                else:
+                    log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Skipped", "No Proposed Fix")
+            except Exception as e:
+                log_to_excel(wi_id, issue_key, "Update Proposed Fix", "Error", str(e)[:100])
+
 
             # 5c) QA Comment
             try:
