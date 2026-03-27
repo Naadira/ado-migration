@@ -2242,16 +2242,41 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
 # Code 2's process_comment_and_post uses a simpler inline format check and calls the
 # simpler _parse_comment_markdown. If ADO markdown comments contain images, malformed
 # links, or raw HTML in the text field, use Code 1's improved implementation.
+IMAGE_MD_RE = re.compile(r'!\[[^\]]*\]\(([^)]+)\)')
+
 def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
     if not text:
         return []
 
+    # Unescape HTML entities first (Code 1 difference)
+    import html as html_lib
+    text = html_lib.unescape(text)
+
     resolved_text = _resolve_markdown_mentions(text, mention_map)
     resolved_text = _convert_markdown_to_jira_wiki(resolved_text)
-    resolved_text = resolved_text.strip()
-    if resolved_text:
-        return [{"kind": "text", "value": resolved_text}]
-    return []
+
+    parts: List[Dict] = []
+    last_end = 0
+
+    for m in IMAGE_MD_RE.finditer(resolved_text):
+        # Text before the image
+        before = resolved_text[last_end:m.start()].strip()
+        if before:
+            parts.append({"kind": "text", "value": before})
+        # The image URL
+        img_url = m.group(1).strip()
+        parts.append({"kind": "image", "src": img_url})
+        last_end = m.end()
+
+    # Remaining text after last image
+    after = resolved_text[last_end:].strip()
+    if after:
+        parts.append({"kind": "text", "value": after})
+
+    if not parts and resolved_text.strip():
+        parts.append({"kind": "text", "value": resolved_text.strip()})
+
+    return parts
 
 
 def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_index: int = 0,
