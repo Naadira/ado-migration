@@ -1455,16 +1455,51 @@ def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id
     soup = BeautifulSoup(repro_html, "html.parser")
     for img in soup.find_all("img"):
         src = img.get("src")
-        if src and ATTACH_URL_SUBSTR in src and src not in attachment_map:
+        if not src or src in attachment_map:
+            continue
+
+        if ATTACH_URL_SUBSTR in src:
+            # Existing ADO attachment handling
             filename = parse_qs(urlparse(src).query or "").get("fileName", ["attachment.png"])[0]
             local_file = ado_download_attachment(src, filename, wi_id=wi_id, issue_key=issue_key)
-            if not local_file:
-                continue
-            upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
-            if upload_info and upload_info.get("id"):
-                attachment_map[src] = upload_info["id"]
-    return attachment_map
+        else:
+            # NEW: Handle external image URLs (e.g. tpondemand.com, etc.)
+            try:
+                parsed = urlparse(src)
+                filename = os.path.basename(parsed.path) or f"external_image_{len(attachment_map)}.png"
+                filename = sanitize_filename(filename)
+                if not os.path.splitext(filename)[1]:
+                    filename += ".png"
+                ensure_dir(ATTACH_DIR)
+                local_path = unique_path(ATTACH_DIR, filename)
+                log(f"   📥 Downloading external image: {src}")
+                r = requests.get(src, timeout=15, stream=True)
+                if r.status_code == 200:
+                    with open(local_path, "wb") as f:
+                        for chunk in r.iter_content(8192):
+                            if chunk:
+                                f.write(chunk)
+                    local_file = local_path
+                    log(f"   ✅ Downloaded external image: {filename}")
+                else:
+                    log(f"   ⚠️ Failed to download external image ({r.status_code}): {src}")
+                    local_file = None
+            except Exception as e:
+                log(f"   ⚠️ Error downloading external image {src}: {e}")
+                local_file = None
 
+        if not local_file:
+            continue
+        upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
+        if upload_info and upload_info.get("id"):
+            attachment_map[src] = upload_info["id"]
+        try:
+            if local_file and os.path.exists(local_file):
+                os.remove(local_file)
+        except Exception:
+            pass
+
+    return attachment_map
 
 # ============================================================
 # IMPROVED convert_ado_reprosteps_to_jira_adf FUNCTION
