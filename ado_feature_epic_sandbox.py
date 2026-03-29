@@ -2492,49 +2492,135 @@ def _resolve_markdown_mentions(text: str, mention_map: Dict[str, str]) -> str:
 
     return _MARKDOWN_MENTION_RE.sub(replace_mention, text)
 
+def _inline_md_to_jira(text: str) -> str:
+    """Apply inline markdown → Jira wiki conversions to a single line/span."""
+
+    # 1. Protect inline code: `code` → {{code}}
+    text = re.sub(r'`([^`]+)`', r'{{\1}}', text)
+
+    # 2. Bold+italic ***text*** → *_text_*  (must precede bold/italic separately)
+    text = re.sub(r'\*{3}(.+?)\*{3}', r'*_\1_*', text)
+
+    # 3. Bold **text** → placeholder sentinels so the italic step won't re-consume them
+    text = re.sub(r'\*{2}(.+?)\*{2}',
+                  lambda m: _BOLD_START + m.group(1) + _BOLD_END, text)
+
+    # 4. Italic *text* → _text_  (only single * remain now)
+    text = re.sub(r'\*([^*\n]+)\*', r'_\1_', text)
+
+    # 5. Restore bold sentinels → Jira *bold*
+    text = text.replace(_BOLD_START, '*').replace(_BOLD_END, '*')
+
+    # 6. Markdown links: [text](url) → [text|url]
+    #    NOT image links (those start with !) — already extracted upstream
+    def md_link_to_jira(m):
+        link_text = m.group(1)
+        url = m.group(2).rstrip('>').strip()
+        # If display text IS the URL, emit bare [url] (no duplicate text)
+        if link_text.startswith('http') and link_text.rstrip('>') == url:
+            return f'[{url}]'
+        return f'[{link_text}|{url}]'
+
+    text = re.sub(r'(?<!!)\[([^\]]+)\]\(([^)]+)\)', md_link_to_jira, text)
+
+    # 7. Bare angle-bracket URLs: <https://...> → [https://...]
+    text = re.sub(r'<(https?://[^>]+)>', r'[\1]', text)
+
+    return text
 
 def _convert_markdown_to_jira_wiki(text: str) -> str:
-    # CODE 1 DIFFERENCE: Code 1 has a far more complete markdown-to-Jira-wiki
-    # conversion. The specific improvements are:
-    #
-    # 1. BOLD+ITALIC COMBINED (***text***): Code 1 converts to *_text_* first,
-    #    before handling bold and italic separately, so triple-asterisk is not
-    #    partially consumed. Code 2 does not handle this case at all.
-    #
-    # 2. BOLD with SENTINEL protection: Code 1 replaces **text** with private
-    #    sentinel characters (_BOLD_START / _BOLD_END) before processing italic,
-    #    then restores them as Jira *bold* at the end. This prevents the italic
-    #    regex from accidentally consuming the inner * of a bold span.
-    #    Code 2 applies both regexes in sequence without protection, which can
-    #    corrupt text like **bold** → *bold* (correct) but also
-    #    ***bold-italic*** → partially mangled output.
-    #
-    # 3. INLINE CODE (`code`): Code 1 converts backtick inline code to {{code}}.
-    #    Code 2 does not handle inline code at all.
-    #
-    # 4. MARKDOWN LINKS ([text](url)): Code 1 converts to Jira [text|url] format,
-    #    with special handling for cases where the display text IS the URL.
-    #    Code 2 does not convert markdown links at all — they appear as raw
-    #    [text](url) strings in Jira.
-    #
-    # 5. ANGLE-BRACKET URLS (<https://...>): Code 1 converts to [url] Jira links.
-    #    Code 2 does not handle these.
-    #
-    # 6. ATX HEADINGS (### Heading): Code 1 converts to Jira h3. Heading notation.
-    #    Code 2 does not handle headings.
-    #
-    # 7. GFM PIPE TABLES (| col | col |): Code 1 converts to Jira || col || col ||
-    #    table notation. Code 2 does not handle markdown tables.
-    #
-    # 8. UNORDERED LISTS (* item / - item): Code 1 converts to Jira * item bullets
-    #    with support for nested lists via indentation depth.
-    #    Code 2 does not handle list items.
-    #
-    # 9. ORDERED LISTS (1. item): Code 1 converts to Jira # item notation.
-    #    Code 2 does not handle ordered lists.
-    text = re.sub(r'\*\*(.+?)\*\*', r'*\1*', text)
-    text = re.sub(r'(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)', r'_\1_', text)
-    return text
+    """
+    Convert GitHub-flavoured markdown to Jira wiki markup.
+
+    Handles:
+      - ATX headings: ### Heading  → h3. Heading
+      - GFM pipe tables: | col | → Jira || col ||
+      - Unordered lists: * item / - item  → * item  (Jira wiki bullet)
+      - Ordered lists: 1. item → # item
+      - Bold: **text**  → *text*
+      - Italic: *text* (single) → _text_
+      - Inline code: `code`  → {{code}}
+      - Markdown links: [text](url)  → [text|url]
+      - Bare URLs: https://...  → left as-is (Jira auto-links)
+    """
+    lines = text.split('\n')
+    out = []
+    i = 0
+
+    while i < len(lines):
+        line = lines[i].rstrip()
+
+        # --- Detect GFM pipe table block ---
+        # A pipe table has | at start/end and a separator row of |---|
+        if re.match(r'^\s*\|', line):
+            # Collect all consecutive pipe lines
+            table_lines = []
+            while i < len(lines) and re.match(r'^\s*\|', lines[i].rstrip()):
+                table_lines.append(lines[i].rstrip())
+                i += 1
+
+            # Parse and emit as Jira wiki table
+            first_row = True
+            for tline in table_lines:
+                # Skip separator rows (---|---|---)
+                if re.match(r'^\s*\|[\s\-\|:]+\|\s*$', tline):
+                    continue
+                # Split cells, strip leading/trailing pipes
+                cells = re.split(r'\s*\|\s*', tline.strip().strip('|'))
+                jira_cells = []
+                for cell in cells:
+                    # Strip literal <br> tags and surrounding whitespace
+                    # Strip both real <br> tags and HTML-entity-escaped &lt;br&gt; / &lt;br /&gt;
+                    cell = re.sub(r'\s*<br\s*/?>\s*', ' ', cell, flags=re.IGNORECASE)
+                    cell = re.sub(r'\s*&lt;br\s*/?&gt;\s*', ' ', cell, flags=re.IGNORECASE)
+                    cell = cell.strip()
+                    cell = _inline_md_to_jira(cell)
+                    jira_cells.append(cell)
+                if first_row:
+                    # First data row becomes header row: ||col||col||
+                    out.append('||' + '||'.join(jira_cells) + '||')
+                    first_row = False
+                else:
+                    out.append('|' + '|'.join(jira_cells) + '|')
+            continue
+
+        # --- ATX headings: ### Text → h3. Text ---
+        heading_match = re.match(r'^(#{1,6})\s+(.+)$', line)
+        if heading_match:
+            level = len(heading_match.group(1))
+            heading_text = re.sub(r'\s*#+\s*$', '', heading_match.group(2).strip())
+            heading_text = _inline_md_to_jira(heading_text)
+            out.append(f'h{level}. {heading_text}')
+            i += 1
+            continue
+
+        # --- Unordered list items: * item / - item / + item ---
+        bullet_match = re.match(r'^(\s*)[\*\-\+]\s+(.+)$', line)
+        if bullet_match:
+            depth = (len(bullet_match.group(1)) // 2) + 1
+            item_text = _inline_md_to_jira(bullet_match.group(2))
+            out.append('*' * depth + ' ' + item_text)
+            i += 1
+            continue
+
+        # --- Ordered list items: 1. item ---
+        ordered_match = re.match(r'^(\s*)\d+\.\s+(.+)$', line)
+        if ordered_match:
+            depth = (len(ordered_match.group(1)) // 2) + 1
+            item_text = _inline_md_to_jira(ordered_match.group(2))
+            out.append('#' * depth + ' ' + item_text)
+            i += 1
+            continue
+
+        # --- Regular paragraph line — apply inline formatting ---
+        out.append(_inline_md_to_jira(line))
+        i += 1
+
+    return '\n'.join(out)
+
+
+_BOLD_START = '\x00B\x00'
+_BOLD_END   = '\x00E\x00'
 
 
 def _resolve_mention(href: str, data_vss_mention: str, display_name: str) -> str:
@@ -2699,40 +2785,37 @@ def _parse_comment_html(html_text: str) -> List[Dict]:
     return parts
 
 
+IMAGE_MD_RE = re.compile(r'!\[[^\]]*\]\(([^)]+)\)')
+
 def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict]:
-    """Parse ADO markdown comment, resolving @mentions and converting to Jira wiki markup."""
     if not text:
         return []
 
-    # CODE 1 DIFFERENCE: Code 1 replaces this entire function with a more capable
-    # _parse_comment_markdown_improved() that:
-    #
-    # 1. CALLS _fix_ado_malformed_markdown_links(text) first to repair ADO's broken
-    #    link patterns (title-escaped links like [text](url "title") and the ADO
-    #    angle-bracket triple-link pattern <[display>](href> "lower")). Code 2 does
-    #    NOT call this helper, so malformed links appear as raw broken markdown in Jira.
-    #
-    # 2. EXTRACTS INLINE IMAGES (![alt](url)) separately as {"kind": "image"} parts
-    #    so they can be downloaded, uploaded to Jira, and embedded inline in the
-    #    comment body. Code 2's version returns only a single {"kind": "text"} part
-    #    for the entire comment — inline markdown images are NOT extracted and will
-    #    appear as raw ![alt](url) text in Jira.
-    #
-    # 3. CALLS _deduplicate_links_in_parts() after parsing to remove duplicate
-    #    [text|url] links. Code 2 does not deduplicate links.
-    #
-    # 4. Applies _resolve_markdown_mentions and _convert_markdown_to_jira_wiki to
-    #    each text segment individually (between images), rather than to the whole
-    #    text at once. This is equivalent in behavior for text-only comments but
-    #    necessary for correct image interleaving.
+    import html as html_lib
+    text = html_lib.unescape(text)
 
     resolved_text = _resolve_markdown_mentions(text, mention_map)
     resolved_text = _convert_markdown_to_jira_wiki(resolved_text)
-    resolved_text = resolved_text.strip()
-    if resolved_text:
-        return [{"kind": "text", "value": resolved_text}]
-    return []
 
+    parts: List[Dict] = []
+    last_end = 0
+
+    for m in IMAGE_MD_RE.finditer(resolved_text):
+        before = resolved_text[last_end:m.start()].strip()
+        if before:
+            parts.append({"kind": "text", "value": before})
+        img_url = m.group(1).strip()
+        parts.append({"kind": "image", "src": img_url})
+        last_end = m.end()
+
+    after = resolved_text[last_end:].strip()
+    if after:
+        parts.append({"kind": "text", "value": after})
+
+    if not parts and resolved_text.strip():
+        parts.append({"kind": "text", "value": resolved_text.strip()})
+
+    return parts
 
 def _post_wiki_comment(issue_key: str, body: str, wi_id=None, comment_index: int = 0):
     """Post a Jira wiki-markup comment via REST API v2."""
@@ -2876,20 +2959,20 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None,
             continue
             
         if not local_file:
-            img_fail_count += 1
+            img_upload_fail += 1
             image_url_map[src_key] = None
             continue
             
         upload_info = jira_upload_attachment(issue_key, local_file, wi_id=wi_id)
         if upload_info and upload_info.get("content"):
             image_url_map[src_key] = upload_info["content"]
-            img_upload_count += 1
+            img_upload_ok += 1
         elif upload_info and upload_info.get("id"):
             base = clean_base(JIRA_URL)
             image_url_map[src_key] = f"{base}/rest/api/2/attachment/content/{upload_info['id']}"
-            img_upload_count += 1
+            img_upload_ok += 1
         else:
-            img_fail_count += 1
+            img_upload_fail += 1
             image_url_map[src_key] = None
             log(f"   ⚠️ Failed to upload image: {filename}")
 
