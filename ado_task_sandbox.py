@@ -56,7 +56,14 @@ WORKITEM_TYPE_MAP = {
     # "User Story": "Story"
 }
 
-PRIORITY_MAP = {1: "Blocker", 2: "High", 3: "Low", 4: "Trivial"}
+# PRIORITY_MAP = {1: "Blocker", 2: "High", 3: "Low", 4: "Trivial"}
+
+PRIORITY_MAP = {
+    1: "P1 - Critical",
+    2: "P2 - High",
+    3: "P3 - Medium",
+    4: "P4 - Low"
+}
 
 BUG_PRIORITY_MAP = {
     "P1": "Blocker", "P2": "High", "P3": "Low", "P4": "Trivial",
@@ -75,7 +82,7 @@ RESOLUTION_MAP = {
 }
 
 STATE_MAP = {
-    "New": "Backlog",
+    "New": "New",
     # "In Refinement": "REFINEMENT",
     # "Ready": "Ready",
     # "Blocked": "Hold",
@@ -1676,7 +1683,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     created_date = f.get("System.CreatedDate")
     if created_date:
         try:
-            fields["customfield_12527"] = convert_ado_datetime(created_date)
+            fields["customfield_12092"] = convert_ado_datetime(created_date)
             log_to_excel(wi_id, None, "Created Date", "Success", f"Date: {created_date[:10]}")
         except Exception as e:
             log_to_excel(wi_id, None, "Created Date", "Failed", str(e)[:100])
@@ -1729,7 +1736,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     priority_rank = f.get("Custom.PriorityRank")
     if priority_rank is not None:
         try:
-            fields["customfield_11700"] = float(priority_rank)
+            fields["customfield_14581"] = float(priority_rank)
             log_to_excel(wi_id, None, "Priority Rank", "Success", f"Value: {priority_rank}")
         except ValueError as e:
             log_to_excel(wi_id, None, "Priority Rank", "Failed", str(e)[:100])
@@ -1737,7 +1744,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Activity
     activity_val = f.get("Microsoft.VSTS.Common.Activity")
     if activity_val:
-        fields["customfield_11814"] = {"value": activity_val}
+        fields["customfield_12082"] = {"value": activity_val}
         log_to_excel(wi_id, None, "Activity", "Success", activity_val)
 
     # Assertions
@@ -1747,7 +1754,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             clean_val = str(assertions_val).strip()
             # Remove thousands separators
             clean_val = clean_val.replace(",", "")
-            fields["customfield_12634"] = float(clean_val)
+            fields["customfield_14448"] = float(clean_val)
             log_to_excel(wi_id, None, "Assertions", "Success", f"Value: {assertions_val}")
         except Exception as e:
             log_to_excel(wi_id, None, "Assertions", "Failed", str(e)[:100])
@@ -1756,7 +1763,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     original_estimate = f.get("Microsoft.VSTS.Scheduling.OriginalEstimate")
     if original_estimate is not None:
         try:
-            fields["customfield_11718"] = float(original_estimate)
+            fields["customfield_14422"] = float(original_estimate)
             log_to_excel(wi_id, None, "Original Estimate", "Success", f"Value: {original_estimate}")
         except ValueError as e:
             log_to_excel(wi_id, None, "Original Estimate", "Failed", str(e)[:100])
@@ -1765,7 +1772,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     remaining_work = f.get("Microsoft.VSTS.Scheduling.RemainingWork")
     if remaining_work is not None:
         try:
-            fields["customfield_11719"] = float(remaining_work)
+            fields["customfield_14423"] = float(remaining_work)
             log_to_excel(wi_id, None, "Remaining Work", "Success", f"Value: {remaining_work}")
         except ValueError as e:
             log_to_excel(wi_id, None, "Remaining Work", "Failed", str(e)[:100])
@@ -1774,7 +1781,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     completed_work = f.get("Microsoft.VSTS.Scheduling.CompletedWork")
     if completed_work is not None:
         try:
-            fields["customfield_11720"] = float(completed_work)
+            fields["customfield_14583"] = float(completed_work)
             log_to_excel(wi_id, None, "Completed Work", "Success", f"Value: {completed_work}")
         except ValueError as e:
             log_to_excel(wi_id, None, "Completed Work", "Failed", str(e)[:100])
@@ -1782,27 +1789,27 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Integration Build
     integrated_in_build = f.get("Microsoft.VSTS.Build.IntegrationBuild")
     if integrated_in_build:
-        fields["customfield_11714"] = str(integrated_in_build)
+        fields["customfield_14449"] = str(integrated_in_build)
         log_to_excel(wi_id, None, "Integration Build", "Success", integrated_in_build)
            
     # Customer Name
     customer_name = f.get("Custom.CustomerName")
     if customer_name:
         parts = [c.strip() for c in customer_name.split(";") if c.strip()]
-        fields["customfield_12350"] = [{"value": p} for p in parts]
+        fields["customfield_14397"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Customer Name", "Success", f"Found {len(parts)} customers")
     
     # Provider Type
     provider_type = f.get("Custom.ProviderType")
     if provider_type:
         parts = [p.strip() for p in provider_type.split(";") if p.strip()]
-        fields["customfield_12383"] = [{"value": p} for p in parts]
+        fields["customfield_14424"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Provider Type", "Success", f"Found {len(parts)} types")
     
     # Product
     product = f.get("Custom.Product")
     if product:
-        fields["customfield_11703"] = {"value": product}
+        fields["customfield_14433"] = {"value": product}
         log_to_excel(wi_id, None, "Product", "Success", product)
 
     # Regression Claims Executed
@@ -1810,7 +1817,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if reg_claims_executed is not None:
         try:
             clean_val = str(reg_claims_executed).strip().replace(",", "")
-            fields["customfield_12635"] = float(clean_val)
+            fields["customfield_14450"] = float(clean_val)
             log_to_excel(wi_id, None, "Regression Claims Executed", "Success", f"Value: {reg_claims_executed}")
         except Exception as e:
             log_to_excel(wi_id, None, "Regression Claims Executed", "Failed", str(e)[:100])
@@ -1820,7 +1827,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if is_regulatory is not None:
         try:
             mapped_value = str(is_regulatory)  # Keep capitalized
-            fields["customfield_12149"] = {"value": mapped_value}
+            fields["customfield_14452"] = {"value": mapped_value}
             log_to_excel(wi_id, None, "Is Regulatory", "Success", mapped_value)
         except Exception as e:
             log_to_excel(wi_id, None, "Is Regulatory", "Failed", str(e)[:100])
@@ -1830,7 +1837,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if policy_change is not None:
         try:
             mapped_value = str(policy_change)  # Converts False → "False"
-            fields["customfield_12600"] = {"value": mapped_value}
+            fields["customfield_14435"] = {"value": mapped_value}
             log_to_excel(wi_id, None, "Policy Change", "Success", mapped_value)
         except Exception as e:
             log_to_excel(wi_id, None, "Policy Change", "Failed", str(e)[:100])
@@ -1908,25 +1915,31 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Area Path (select-list)
     area_path = f.get("System.AreaPath")
     if area_path:
-        fields["customfield_12910"] = {"value": area_path}
+        fields["customfield_14406"] = {"value": area_path}
         log_to_excel(wi_id, None, "Area Path", "Success", area_path)
     
-    # Area Path
-    area = f.get("System.AreaPath")
-    if area:
-        fields["customfield_11601"] = str(area)
-        log_to_excel(wi_id, None, "Area Path", "Success", area)
+    # # Area Path
+    # area = f.get("System.AreaPath")
+    # if area:
+    #     fields["customfield_11601"] = str(area)
+    #     log_to_excel(wi_id, None, "Area Path", "Success", area)
     
-    # Iteration Path
+    # # Iteration Path
+    # iteration = f.get("System.IterationPath")
+    # if iteration:
+    #     fields["customfield_11602"] = str(iteration)
+    #     log_to_excel(wi_id, None, "Iteration Path", "Success", iteration)
+    
+    # Iteration Path (Single Select)
     iteration = f.get("System.IterationPath")
     if iteration:
-        fields["customfield_11602"] = str(iteration)
+        fields["customfield_14405"] = {"value": iteration}
         log_to_excel(wi_id, None, "Iteration Path", "Success", iteration)
-    
+
     # Reason
     reason = f.get("System.Reason")
     if reason:
-        fields["customfield_11603"] = str(reason)
+        fields["customfield_14582"] = str(reason)
         log_to_excel(wi_id, None, "Reason", "Success", reason)
     
     log_to_excel(wi_id, None, "Field Mapping", "Complete", f"Mapped {len(fields)} fields total")
@@ -2538,7 +2551,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["830764"]
+    SPECIFIC_ID = None
 
     # CODE 1 uses SPECIFIC_ID = ["845200"] to run a single targeted work item for debugging.
     # Code 2 sets SPECIFIC_ID = None to process all matched items.
