@@ -37,10 +37,17 @@ Email = os.getenv("EMAIL")
 JIRA_ACCOUNT_ID = os.getenv("JIRA_ACCOUNT_ID")
 
 WORKITEM_TYPE_MAP = {
-    "Hotfix": "Hotfix"
+    "Hotfix": "Change Request"
 }
 
-PRIORITY_MAP = {1: "Blocker", 2: "High", 3: "Low", 4: "Trivial"}
+# PRIORITY_MAP = {1: "Blocker", 2: "High", 3: "Low", 4: "Trivial"}
+
+PRIORITY_MAP = {
+    1: "P1 - Critical",
+    2: "P2 - High",
+    3: "P3 - Medium",
+    4: "P4 - Low"
+}
 
 BUG_PRIORITY_MAP = {
     "P1": "Blocker", "P2": "High", "P3": "Low", "P4": "Trivial",
@@ -1616,7 +1623,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
     ado_type = f.get("System.WorkItemType", "Hotfix")
-    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Hotfix")
+    jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Change Request")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
     tags = f.get("System.Tags", "")
@@ -1645,7 +1652,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     created_date = f.get("System.CreatedDate")
     if created_date:
         try:
-            fields["customfield_12527"] = convert_ado_datetime(created_date)
+            fields["customfield_12092"] = convert_ado_datetime(created_date)
             log_to_excel(wi_id, None, "Created Date", "Success", f"Date: {created_date[:10]}")
         except Exception as e:
             log_to_excel(wi_id, None, "Created Date", "Failed", str(e)[:100])
@@ -1670,7 +1677,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         if team_lead_email:
             team_lead_account_id = get_jira_account_id_for_email(team_lead_email)
             if team_lead_account_id:
-                fields["customfield_12712"] = {"id": team_lead_account_id}
+                fields["customfield_14439"] = {"id": team_lead_account_id}
                 log_to_excel(wi_id, None, "Team Lead", "Success", team_lead_email)
             else:
                 log_to_excel(wi_id, None, "Team Lead", "Failed", f"No mapping for: {team_lead_email}")
@@ -1724,37 +1731,37 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     customer_name = f.get("Custom.CustomerName")
     if customer_name:
         parts = [c.strip() for c in customer_name.split(";") if c.strip()]
-        fields["customfield_12350"] = [{"value": p} for p in parts]
+        fields["customfield_14397"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Customer Name", "Success", f"Found {len(parts)} customers")
 
     # Product
     product = f.get("Custom.Product")
     if product:
-        fields["customfield_11703"] = {"value": product}
+        fields["customfield_14433"] = {"value": product}
         log_to_excel(wi_id, None, "Product", "Success", product)
 
     # REDIS Impact
     redis_impact = f.get("Custom.BgNextchangesREDISimpact")
     if redis_impact:
-        fields["customfield_12713"] = {"value": redis_impact}
+        fields["customfield_14464"] = {"value": redis_impact}
         log_to_excel(wi_id, None, "BgNextchangesREDISimpact", "Success", redis_impact)
 
     # Recreatable Internally
     recreatable = f.get("Custom.RecreatableInternally")
     if recreatable:
-        fields["customfield_12714"] = {"value": recreatable.strip()}
+        fields["customfield_14466"] = {"value": recreatable.strip()}
         log_to_excel(wi_id, None, "RecreatableInternally", "Success", recreatable)
 
     # Deployment Type
     deployment_type = f.get("Custom.DeploymentType")
     if deployment_type:
-        fields["customfield_12137"] = {"value": deployment_type.strip()}
+        fields["customfield_14470"] = {"value": deployment_type.strip()}
         log_to_excel(wi_id, None, "DeploymentType", "Success", deployment_type)
 
     # Release Occurred
     release_occurred = f.get("Custom.ReleaseOccurred")
     if release_occurred is not None:
-        fields["customfield_12944"] = str(release_occurred)
+        fields["customfield_14471"] = str(release_occurred)
         log_to_excel(wi_id, None, "ReleaseOccurred", "Success", release_occurred)
 
     # Application (Multi Select)
@@ -1762,7 +1769,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if application:
         try:
             parts = [a.strip() for a in application.split(";") if a.strip()]
-            fields["customfield_12716"] = [{"value": p} for p in parts]
+            fields["customfield_14508"] = [{"value": p} for p in parts]
             log_to_excel(wi_id, None, "Application", "Success", f"Found {len(parts)} values")
         except Exception as e:
             log_to_excel(wi_id, None, "Application", "Failed", str(e)[:100])
@@ -1770,14 +1777,14 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Release
     release_val = f.get("Custom.Release")
     if release_val:
-        fields["customfield_11712"] = {"value": release_val}
+        fields["customfield_11848"] = {"value": release_val}
         log_to_excel(wi_id, None, "Release", "Success", release_val)
 
     # Dev ETA
     dev_eta = f.get("Custom.DevETA")
     if dev_eta:
         try:
-            fields["customfield_12709"] = convert_ado_datetime(dev_eta)
+            fields["customfield_11946"] = convert_ado_datetime(dev_eta)
             log_to_excel(wi_id, None, "Dev ETA", "Success", f"Date: {dev_eta[:10]}")
         except Exception as e:
             log_to_excel(wi_id, None, "Dev ETA", "Failed", str(e)[:100])
@@ -1793,7 +1800,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         if developer_email:
             developer_account_id = get_jira_account_id_for_email(developer_email)
             if developer_account_id:
-                fields["customfield_12717"] = {"id": developer_account_id}
+                fields["customfield_14444"] = {"id": developer_account_id}
                 log_to_excel(wi_id, None, "Developer", "Success", developer_email)
             else:
                 log_to_excel(wi_id, None, "Developer", "Failed", f"MISSING MAPPING: {developer_email}")
@@ -1802,7 +1809,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     qa_estimate = f.get("Custom.QAEstimate")
     if qa_estimate is not None:
         try:
-            fields["customfield_11967"] = float(qa_estimate)
+            fields["customfield_14445"] = float(qa_estimate)
             log_to_excel(wi_id, None, "QA Estimate", "Success", qa_estimate)
         except ValueError as e:
             log_to_excel(wi_id, None, "QA Estimate", "Failed", str(e)[:100])
@@ -1818,7 +1825,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         if qa_email:
             qa_account_id = get_jira_account_id_for_email(qa_email)
             if qa_account_id:
-                fields["customfield_12754"] = {"id": qa_account_id}
+                fields["customfield_14446"] = {"id": qa_account_id}
                 log_to_excel(wi_id, None, "QA", "Success", qa_email)
             else:
                 log_to_excel(wi_id, None, "QA", "Failed", f"MISSING MAPPING: {qa_email}")
@@ -1826,13 +1833,13 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Branch Name
     branch_name = f.get("Custom.BranchName")
     if branch_name:
-        fields["customfield_11710"] = str(branch_name)
+        fields["customfield_14416"] = str(branch_name)
         log_to_excel(wi_id, None, "Branch Name", "Success", branch_name)
 
-    # Environment Found In
+    # Environment Found In → Multi Select
     environment = f.get("Custom.EnvironmentFoundIn")
     if environment:
-        fields["customfield_11715"] = {"value": environment.strip()}
+        fields["customfield_14419"] = [{"value": environment.strip()}]
         log_to_excel(wi_id, None, "Environment", "Success", environment)
 
     # Hotfix Production Date
@@ -1841,7 +1848,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         try:
             formatted_datetime = convert_ado_datetime(hotfix_date)
             if formatted_datetime:
-                fields["customfield_12142"] = formatted_datetime[:10]
+                fields["customfield_14472"] = formatted_datetime[:10]
                 log_to_excel(wi_id, None, "Hotfix Production Date", "Success", formatted_datetime[:10])
             else:
                 log_to_excel(wi_id, None, "Hotfix Production Date", "Failed", "Invalid date format")
@@ -1852,31 +1859,37 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     wid = f.get("System.Id")
     if wid:
         ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
-        fields["customfield_11600"] = f"{ado_base}/_workitems/edit/{wid}"
+        fields["customfield_14407"] = f"{ado_base}/_workitems/edit/{wid}"
         log_to_excel(wi_id, None, "ADO Link", "Success", f"WI: {wid}")
 
     # Area Path (select-list)
     area_path = f.get("System.AreaPath")
     if area_path:
-        fields["customfield_12910"] = {"value": area_path}
+        fields["customfield_14406"] = {"value": area_path}
         log_to_excel(wi_id, None, "Area Path", "Success", area_path)
 
-    # Area Path (text)
-    area = f.get("System.AreaPath")
-    if area:
-        fields["customfield_11601"] = str(area)
-        log_to_excel(wi_id, None, "Area Path", "Success", area)
+    # # Area Path (text)
+    # area = f.get("System.AreaPath")
+    # if area:
+    #     fields["customfield_11601"] = str(area)
+    #     log_to_excel(wi_id, None, "Area Path", "Success", area)
 
-    # Iteration Path
+    # # Iteration Path
+    # iteration = f.get("System.IterationPath")
+    # if iteration:
+    #     fields["customfield_11602"] = str(iteration)
+    #     log_to_excel(wi_id, None, "Iteration Path", "Success", iteration)
+
+    # Iteration Path (Single Select)
     iteration = f.get("System.IterationPath")
     if iteration:
-        fields["customfield_11602"] = str(iteration)
+        fields["customfield_14405"] = {"value": iteration}
         log_to_excel(wi_id, None, "Iteration Path", "Success", iteration)
 
     # Reason
     reason = f.get("System.Reason")
     if reason:
-        fields["customfield_11603"] = str(reason)
+        fields["customfield_14582"] = str(reason)
         log_to_excel(wi_id, None, "Reason", "Success", reason)
 
     # System or Client Impact — store raw HTML for later processing
@@ -2640,7 +2653,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["880260"]
+    SPECIFIC_ID = None
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
@@ -2752,7 +2765,7 @@ def migrate_all():
                     r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
                                     step="Update SystemClientImpact", auth=jira_auth(),
                                     headers={"Content-Type": "application/json"},
-                                    json={"fields": {"customfield_12720": impact_adf}})
+                                    json={"fields": {"customfield_14457": impact_adf}})
                     if r.status_code in (200, 204):
                         log_to_excel(wi_id, issue_key, "Update SystemClientImpact", "Success", "System/Client Impact updated")
                     else:
