@@ -41,26 +41,32 @@ JIRA_ACCOUNT_ID = os.getenv("JIRA_ACCOUNT_ID")
 # In this file (Code 2) it maps to "Story" because the target Jira project
 # uses "Story" as the issue type name rather than "User Story".
 WORKITEM_TYPE_MAP = {
-    "Bug": "Bug",
-    "Defect": "Defect",
-    "Epic": "Epic",
-    "Feature": "Feature",
-    "Hotfix": "Hotfix",
-    "Issue": "Issue",
-    "Joes Test": "Joes Test",
-    "Portfolio Epic": "Portfolio Epic",
-    "Post Lockdown": "Post Lockdown",
-    "Request": "Request",
-    "RIDA (disabled)": "RIDA (disabled)",
-    "Risk (disabled)": "Risk (disabled)",
-    "Task": "Task",
-    "Test Case": "Epic",
-    "Test Plan": "Test Plan",
-    "Test Suite": "Test Suite",
+    # "Bug": "Bug",
+    # "Defect": "Defect",
+    # "Epic": "Epic",
+    # "Feature": "Feature",
+    # "Hotfix": "Hotfix",
+    # "Issue": "Issue",
+    # "Joes Test": "Joes Test",
+    # "Portfolio Epic": "Portfolio Epic",
+    # "Post Lockdown": "Post Lockdown",
+    # "Request": "Request",
+    # "RIDA (disabled)": "RIDA (disabled)",
+    # "Risk (disabled)": "Risk (disabled)",
+    # "Task": "Task",
+    # "Test Case": "Epic",
+    # "Test Plan": "Test Plan",
+    # "Test Suite": "Test Suite",
     "User Story": "Story"
 }
 
-PRIORITY_MAP = {1: "Blocker", 2: "High", 3: "Low", 4: "Trivial"}
+# PRIORITY_MAP = {1: "Blocker", 2: "High", 3: "Low", 4: "Trivial"}
+PRIORITY_MAP = {
+    1: "P1 - Critical",
+    2: "P2 - High",
+    3: "P3 - Medium",
+    4: "P4 - Low"
+}
 
 BUG_PRIORITY_MAP = {
     "P1": "Blocker", "P2": "High", "P3": "Low", "P4": "Trivial",
@@ -89,13 +95,13 @@ RESOLUTION_MAP = {
 # the Bug project (Code 1) and the User Story project (Code 2).
 STATE_MAP = {
     "New": "New",
-    "In Refinement": "REFINEMENT",
+    "In Refinement": "Refinement",
     "Ready": "Ready",
-    "Blocked": "Hold",
+    "Blocked": "On Hold",
     "In Development": "In Progress",
     "Development Complete": "Review",
     "In Test": "Testing",
-    "Test Complete": "Ready for Release",
+    "Test Complete": "Ready For Release",
     "Closed": "Done",
     "Removed": "Cancelled"
 }
@@ -1697,7 +1703,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     created_date = f.get("System.CreatedDate")
     if created_date:
         try:
-            fields["customfield_12527"] = convert_ado_datetime(created_date)
+            fields["customfield_12092"] = convert_ado_datetime(created_date)
             log_to_excel(wi_id, None, "Created Date", "Success", f"Date: {created_date[:10]}")
         except Exception as e:
             log_to_excel(wi_id, None, "Created Date", "Failed", str(e)[:100])
@@ -1755,7 +1761,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     priority_rank = f.get("Custom.PriorityRank")
     if priority_rank is not None:
         try:
-            fields["customfield_11700"] = float(priority_rank)
+            fields["customfield_14581"] = float(priority_rank)
             log_to_excel(wi_id, None, "Priority Rank", "Success", f"Value: {priority_rank}")
         except ValueError as e:
             log_to_excel(wi_id, None, "Priority Rank", "Failed", str(e)[:100])
@@ -1768,7 +1774,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         try:
             publish_date = convert_ado_datetime(publish_date_val)
             if publish_date:
-                fields["customfield_12173"] = publish_date
+                fields["customfield_14408"] = publish_date
                 log_to_excel(wi_id, None, "Publish Date", "Success", publish_date_val[:10])
         except Exception as e:
             log_to_excel(wi_id, None, "Publish Date", "Failed", str(e)[:100])
@@ -1781,7 +1787,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         try:
             earliest_effective_date = convert_ado_datetime(earliest_effective_date_val)
             if earliest_effective_date:
-                fields["customfield_12560"] = earliest_effective_date
+                fields["customfield_14409"] = earliest_effective_date
                 log_to_excel(wi_id, None, "Earliest Effective Date", "Success", earliest_effective_date_val[:10])
         except Exception as e:
             log_to_excel(wi_id, None, "Earliest Effective Date", "Failed", str(e)[:100])
@@ -1791,7 +1797,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # This is a User Story-specific field not present on Bug work items.
     sample_claims_status = f.get("Custom.SampleClaimsStatus")
     if sample_claims_status:
-        fields["customfield_12561"] = {"value": sample_claims_status}
+        fields["customfield_14412"] = {"value": sample_claims_status}
         log_to_excel(wi_id, None, "Sample Claims Status", "Success", sample_claims_status)
 
     # MMS Status
@@ -1799,13 +1805,13 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # This is a User Story-specific field not present on Bug work items.
     mms_status = f.get("Custom.MMSStatus")
     if mms_status:
-        fields["customfield_12562"] = {"value": mms_status}
+        fields["customfield_14413"] = {"value": mms_status}
         log_to_excel(wi_id, None, "MMS Status", "Success", mms_status)
 
     # Release Notes Status
     release_notes_status = f.get("Custom.ReleaseNotesStatus")
     if release_notes_status:
-        fields["customfield_11701"] = {"value": release_notes_status}
+        fields["customfield_14414"] = {"value": release_notes_status}
         log_to_excel(wi_id, None, "Release Notes Status", "Success", release_notes_status)
 
     # Stock Updates
@@ -1817,34 +1823,34 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             options = [opt.strip() for opt in stock_updates.split(";")]
         else:
             options = [stock_updates.strip()]
-        fields["customfield_12563"] = [{"value": opt} for opt in options]
+        fields["customfield_14415"] = [{"value": opt} for opt in options]
 
     # Retire Release
     # CODE 1 DIFFERENCE — Code 1 does NOT map RetireRelease (customfield_12596).
     # This is a User Story-specific lifecycle field not present on Bug work items.
     retire_release = f.get("Custom.RetireRelease")
     if retire_release:
-        fields["customfield_12596"] = {"value": retire_release}
+        fields["customfield_14432"] = {"value": retire_release}
         log_to_excel(wi_id, None, "Retire Release", "Success", retire_release)
 
     # Branch Name
     branch_name = f.get("Custom.BranchName")
     if branch_name:
-        fields["customfield_11710"] = str(branch_name)
+        fields["customfield_14416"] = str(branch_name)
         log_to_excel(wi_id, None, "Branch Name", "Success", branch_name)
 
     # Environment Found In
     environment = f.get("Custom.EnvironmentFoundIn")
     if environment:
         parts = [e.strip().strip('"') for e in environment.split(";") if e.strip()]
-        fields["customfield_12597"] = [{"value": p} for p in parts]
+        fields["customfield_14419"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Environment", "Success", f"Found {len(parts)} environments")
 
     # Hotfix Production Date
     hotfix_production_date = f.get("Custom.HotfixProductionDate")
     if hotfix_production_date:
         try:
-            fields["customfield_12416"] = convert_ado_datetime(hotfix_production_date)
+            fields["customfield_11907"] = convert_ado_datetime(hotfix_production_date)
             log_to_excel(wi_id, None, "Hotfix Production Date", "Success", hotfix_production_date[:10])
         except Exception as e:
             log_to_excel(wi_id, None, "Hotfix Production Date", "Failed", str(e)[:100])
@@ -1852,14 +1858,14 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Release
     release_val = f.get("Custom.Release")
     if release_val:
-        fields["customfield_11712"] = {"value": release_val}
+        fields["customfield_11848"] = {"value": release_val}
         log_to_excel(wi_id, None, "Release", "Success", release_val)
 
     # Customer Name
     customer_name = f.get("Custom.CustomerName")
     if customer_name:
         parts = [c.strip() for c in customer_name.split(";") if c.strip()]
-        fields["customfield_12350"] = [{"value": p} for p in parts]
+        fields["customfield_14397"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Customer Name", "Success", f"Found {len(parts)} customers")
 
     # Medicaid State
@@ -1868,20 +1874,20 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     medicaid_state = f.get("Custom.MedicaidState")
     if medicaid_state:
         parts = [s.strip().strip('"') for s in medicaid_state.split(";") if s.strip()]
-        fields["customfield_12598"] = [{"value": p} for p in parts]
+        fields["customfield_14417"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Medicaid State", "Success", f"Found {len(parts)} states")
 
     # Provider Type
     provider_type = f.get("Custom.ProviderType")
     if provider_type:
         parts = [p.strip() for p in provider_type.split(";") if p.strip()]
-        fields["customfield_12383"] = [{"value": p} for p in parts]
+        fields["customfield_14424"] = [{"value": p} for p in parts]
         log_to_excel(wi_id, None, "Provider Type", "Success", f"Found {len(parts)} types")
 
     # Product
     product_val = f.get("Custom.Product")
     if product_val:
-        fields["customfield_11703"] = {"value": product_val}
+        fields["customfield_14433"] = {"value": product_val}
         log_to_excel(wi_id, None, "Product", "Success", product_val)
 
     # Payment Integrity
@@ -1889,7 +1895,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # This is a User Story-specific field not present on Bug work items.
     payment_integrity = f.get("Custom.PaymentIntegrity")
     if payment_integrity:
-        fields["customfield_12599"] = {"value": payment_integrity}
+        fields["customfield_14434"] = {"value": payment_integrity}
         log_to_excel(wi_id, None, "Payment Integrity", "Success", payment_integrity)
 
     # Cost Estimate (customfield_12457)
@@ -1898,7 +1904,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     cost_estimate = f.get("Custom.CostEstimate")
     if cost_estimate:
         try:
-            fields["customfield_12457"] = str(cost_estimate)
+            fields["customfield_14426"] = str(cost_estimate)
             log_to_excel(wi_id, None, "Cost Estimate", "Success", f"Value: {cost_estimate}")
         except Exception as e:
             log_to_excel(wi_id, None, "Cost Estimate", "Error", str(e)[:100])
@@ -1911,20 +1917,20 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     policy_change = f.get("Custom.PolicyChange")
     if policy_change is not None:
         mapped_value = "True" if policy_change else "False"
-        fields["customfield_12600"] = {"value": mapped_value}
+        fields["customfield_14435"] = {"value": mapped_value}
         log_to_excel(wi_id, None, "Policy Change", "Success", mapped_value)
 
     # Deliverable Type
     deliverable_type = f.get("Custom.DeliverableType")
     if deliverable_type:
-        fields["customfield_11707"] = {"value": deliverable_type}
+        fields["customfield_14398"] = {"value": deliverable_type}
         log_to_excel(wi_id, None, "Deliverable Type", "Success", deliverable_type)
 
     # Risk Opened
     risk_opened = f.get("Custom.RiskOpened")
     if risk_opened is not None:
         mapped_value = "True" if risk_opened else "False"
-        fields["customfield_11708"] = {
+        fields["customfield_14436"] = {
             "value": mapped_value
         }
 
@@ -1933,7 +1939,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # This is a User Story-specific field not present on Bug work items.
     new_data_table = f.get("Custom.NewDataTable")
     if new_data_table:
-        fields["customfield_12601"] = {"value": new_data_table}
+        fields["customfield_14437"] = {"value": new_data_table}
         log_to_excel(wi_id, None, "New Data Table", "Success", new_data_table)
 
     # CODE 1 DIFFERENCE — Code 1 maps the following Bug-specific fields that do NOT appear
@@ -1979,7 +1985,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Risk Rank
     risk_rank_val = f.get("Custom.RiskRank")
     if risk_rank_val:
-        fields["customfield_12876"] = {"value": risk_rank_val}
+        fields["customfield_14438"] = {"value": risk_rank_val}
         log_to_excel(wi_id, None, "Risk Rank", "Success", risk_rank_val)
 
     # Team Lead
@@ -1993,7 +1999,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         if team_lead_email:
             team_lead_account_id = get_jira_account_id_for_email(team_lead_email)
             if team_lead_account_id:
-                fields["customfield_12712"] = {"id": team_lead_account_id}
+                fields["customfield_14439"] = {"id": team_lead_account_id}
                 log_to_excel(wi_id, None, "Team Lead", "Success", team_lead_email)
             else:
                 log_to_excel(wi_id, None, "Team Lead", "Failed", f"No mapping for: {team_lead_email}")
@@ -2001,20 +2007,20 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     # Risk Status
     risk_status_val = f.get("Custom.RiskStatus")
     if risk_status_val:
-        fields["customfield_12877"] = {"value": risk_status_val}
+        fields["customfield_14440"] = {"value": risk_status_val}
         log_to_excel(wi_id, None, "Risk Status", "Success", risk_status_val)
 
     # Origin Ticket ID
     origin_ticket_id = f.get("Custom.OriginTicketID")
     if origin_ticket_id:
-        fields["customfield_12871"] = str(origin_ticket_id)
+        fields["customfield_14441"] = str(origin_ticket_id)
         log_to_excel(wi_id, None, "Origin Ticket ID", "Success", origin_ticket_id)
 
     # Date Reported
     date_reported = f.get("Custom.DateReported")
     if date_reported:
         try:
-            fields["customfield_12872"] = convert_ado_datetime(date_reported)
+            fields["customfield_14442"] = convert_ado_datetime(date_reported)
             log_to_excel(wi_id, None, "Date Reported", "Success", f"Date: {date_reported[:10]}")
         except Exception as e:
             log_to_excel(wi_id, None, "Date Reported", "Failed", str(e)[:100])
@@ -2033,7 +2039,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
             origin_account_id = get_jira_account_id_for_email(origin_email)
 
             if origin_account_id:
-                fields["customfield_12873"] = {"id": origin_account_id}
+                fields["customfield_14443"] = {"id": origin_account_id}
                 log_to_excel(wi_id, None, "Origin Ticket Assigned To", "Success", origin_email)
             else:
                 log_to_excel(wi_id, None, "Origin Ticket Assigned To", "Failed", f"No mapping for: {origin_email}")
@@ -2042,7 +2048,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     dev_eta = f.get("Custom.DevETA")
     if dev_eta:
         try:
-            fields["customfield_12709"] = convert_ado_datetime(dev_eta)
+            fields["customfield_11946"] = convert_ado_datetime(dev_eta)
             log_to_excel(wi_id, None, "Dev ETA", "Success", f"Date: {dev_eta[:10]}")
         except Exception as e:
             log_to_excel(wi_id, None, "Dev ETA", "Failed", str(e)[:100])
@@ -2058,7 +2064,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         if developer_email:
             developer_account_id = get_jira_account_id_for_email(developer_email)
             if developer_account_id:
-                fields["customfield_12717"] = {"id": developer_account_id}
+                fields["customfield_14444"] = {"id": developer_account_id}
                 log_to_excel(wi_id, None, "Developer", "Success", developer_email)
             else:
                 log_to_excel(wi_id, None, "Developer", "Failed", f"MISSING MAPPING: {developer_email}")
@@ -2068,7 +2074,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
     if qa_estimate is not None:
         try:
-            fields["customfield_11967"] = float(qa_estimate)
+            fields["customfield_14445"] = float(qa_estimate)
             log_to_excel(wi_id, None, "QA Estimate", "Success", qa_estimate)
         except ValueError as e:
             log_to_excel(wi_id, None, "QA Estimate", "Failed", str(e)[:100])
@@ -2084,10 +2090,19 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         if qa_email:
             qa_account_id = get_jira_account_id_for_email(qa_email)
             if qa_account_id:
-                fields["customfield_12754"] = {"id": qa_account_id}
+                fields["customfield_14446"] = {"id": qa_account_id}
                 log_to_excel(wi_id, None, "QA", "Success", qa_email)
             else:
                 log_to_excel(wi_id, None, "QA", "Failed", f"MISSING MAPPING: {qa_email}")
+
+    # Story Priority → Jira Single Select
+    story_priority = f.get("Microsoft.VSTS.Common.Priority")
+    if story_priority:
+        fields["customfield_14548"] = {"value": str(story_priority)}
+        log_to_excel(wi_id, None, "Story Priority", "Success", str(story_priority))
+    else:
+        log_to_excel(wi_id, None, "Story Priority", "Skipped", "No value in ADO")
+
 
     # Assignee
     account_id = get_jira_account_id_for_email(assignee_email)
@@ -2104,31 +2119,37 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     wid = f.get("System.Id")
     if wid:
         ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
-        fields["customfield_11600"] = f"{ado_base}/_workitems/edit/{wid}"
+        fields["customfield_14407"] = f"{ado_base}/_workitems/edit/{wid}"
         log_to_excel(wi_id, None, "ADO Link", "Success", f"WI: {wid}")
 
     # Area Path (select-list)
     area_path = f.get("System.AreaPath")
     if area_path:
-        fields["customfield_12910"] = {"value": area_path}
+        fields["customfield_14406"] = {"value": area_path}
         log_to_excel(wi_id, None, "Area Path", "Success", area_path)
 
-    # Area Path
-    area = f.get("System.AreaPath")
-    if area:
-        fields["customfield_11601"] = str(area)
-        log_to_excel(wi_id, None, "Area Path", "Success", area)
+    # # Area Path
+    # area = f.get("System.AreaPath")
+    # if area:
+    #     fields["customfield_11601"] = str(area)
+    #     log_to_excel(wi_id, None, "Area Path", "Success", area)
 
-    # Iteration Path
+    # # Iteration Path
+    # iteration = f.get("System.IterationPath")
+    # if iteration:
+    #     fields["customfield_11602"] = str(iteration)
+    #     log_to_excel(wi_id, None, "Iteration Path", "Success", iteration)
+
+    # Iteration Path (Single Select)
     iteration = f.get("System.IterationPath")
     if iteration:
-        fields["customfield_11602"] = str(iteration)
+        fields["customfield_14405"] = {"value": iteration}
         log_to_excel(wi_id, None, "Iteration Path", "Success", iteration)
 
     # Reason
     reason = f.get("System.Reason")
     if reason:
-        fields["customfield_11603"] = str(reason)
+        fields["customfield_14582"] = str(reason)
         log_to_excel(wi_id, None, "Reason", "Success", reason)
 
     log_to_excel(wi_id, None, "Field Mapping", "Complete", f"Mapped {len(fields)} fields total")
@@ -2771,14 +2792,14 @@ def migrate_all():
     # CODE 1 DIFFERENCE — Code 1 sets SPECIFIC_ID = ["845200"] to target a single work item
     # for a focused test/debug run. Code 2 sets SPECIFIC_ID = None to process all found IDs.
     # Code 1 also sets MAX_TO_PROCESS = 1000 while Code 2 uses 10000.
-    SPECIFIC_ID = ["877273"]
+    SPECIFIC_ID = None
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
         log(f"🎯 Running migration for specific work items: {SPECIFIC_ID}")
     else:
         START_INDEX = 0
-        MAX_TO_PROCESS = 10000
+        MAX_TO_PROCESS = 1000
         ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
 
     for batch in chunked(ids, WIQL_PAGE_SIZE):
@@ -2919,7 +2940,7 @@ def migrate_all():
                     r = api_request("put", url, wi_id=wi_id, issue_key=issue_key,
                                     step="Update AcceptanceCriteria", auth=jira_auth(),
                                     headers={"Content-Type": "application/json"},
-                                    json={"fields": {"customfield_11880": ac_adf}})
+                                    json={"fields": {"customfield_11630": ac_adf}})
                     if r.status_code in (200, 204):
                         log_to_excel(wi_id, issue_key, "Update AcceptanceCriteria", "Success", "Acceptance Criteria updated")
                     else:
