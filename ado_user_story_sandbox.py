@@ -1673,7 +1673,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
 
     summary = f.get("System.Title", "No Title")
     raw_desc = f.get("System.Description", "")
-    ado_type = f.get("System.WorkItemType", "Story")
+    ado_type = f.get("System.WorkItemType", "User Story")
     jira_issuetype = WORKITEM_TYPE_MAP.get(ado_type, "Story")
     log_to_excel(wi_id, None, "Issue Type", "Success", f"ADO: {ado_type} → Jira: {jira_issuetype}")
 
@@ -2779,8 +2779,8 @@ def migrate_all():
     # Code 2 queries for WorkItemType = 'User Story' over the same date range.
     # Both files are single-project migration scripts targeting different work item types.
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-02-21' "
-        "AND [System.CreatedDate] <= '2026-02-28' AND [System.WorkItemType] = 'User Story'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
+        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'User Story'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
