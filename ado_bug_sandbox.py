@@ -3093,8 +3093,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-02-21' "
-        "AND [System.CreatedDate] <= '2026-02-28' AND [System.WorkItemType] = 'Bug'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
+        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'Bug'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
