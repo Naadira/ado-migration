@@ -2852,7 +2852,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None,
 
     Images are downloaded from ADO, uploaded to Jira, then embedded as !url! in wiki markup.
     """
-    meta_line = f"*Originally commented by {author} on {created_str}*"
+    meta_line = f"*Commented by {author} on {created_str}*"
 
     comment_format = comment.get("format", "html").lower()
     raw_text = comment.get("text", "")
@@ -3041,7 +3041,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = None  # Set to None for batch mode
+    SPECIFIC_ID = ["884637"]  # Set to None for batch mode
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
