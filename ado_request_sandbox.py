@@ -2293,7 +2293,7 @@ def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict
 
 def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_index: int = 0,
                               author: str = "Unknown", created_str: str = ""):
-    meta_line = f"*Originally commented by {author} on {created_str}*"
+    meta_line = f"*Commented by {author} on {created_str}*"
 
     comment_format = comment.get("format", "html").lower()
     raw_text = comment.get("text", "")
