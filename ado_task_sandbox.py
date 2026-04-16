@@ -1909,7 +1909,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     wid = f.get("System.Id")
     if wid:
         ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
-        fields["customfield_11600"] = f"{ado_base}/_workitems/edit/{wid}"
+        fields["customfield_14407"] = f"{ado_base}/_workitems/edit/{wid}"
         log_to_excel(wi_id, None, "ADO Link", "Success", f"WI: {wid}")
 
     # Area Path (select-list)
@@ -2259,7 +2259,7 @@ def _parse_comment_markdown(text: str, mention_map: Dict[str, str]) -> List[Dict
 
 def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_index: int = 0,
                               author: str = "Unknown", created_str: str = ""):
-    meta_line = f"*Originally commented by {author} on {created_str}*"
+    meta_line = f"*Commented by {author} on {created_str}*"
 
     # CODE 1 uses a dedicated detect_comment_format() function here with more robust logic:
     #   - Checks if raw_text itself contains block-level HTML tags (div, img, br, p, etc.)
