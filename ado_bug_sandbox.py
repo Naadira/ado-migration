@@ -2841,7 +2841,7 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
     Handles HTML/markdown format detection, inline image download+upload,
     URL deduplication, and @mention resolution.
     """
-    meta_line = f"*Originally commented by {author} on {created_str}*"
+    meta_line = f"*Commented by {author} on {created_str}*"
 
     comment_format, raw_text, rendered_text = detect_comment_format(comment)
 
