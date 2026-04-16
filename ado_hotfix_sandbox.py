@@ -72,6 +72,28 @@ STATE_MAP = {
     "Cancelled": "Cancelled"
 }
 
+AREA_PATH_TO_SCRUM_TEAM = {
+    "Automation":              "Automation",
+    "Cardinals":               "Cardinals",
+    "Innovators":              "Innovators",
+    "Inpatient":               "Inpatient",
+    "Maestros":                "Maestros",
+    "Outpatient":              "Outpatient",
+    "Pathfinders":             "Pathfinders",
+    "Payment Integrity":       "Payment Integrity",
+    "Phoenix":                 "Phoenix",
+    "Professional":            "Professional",
+    "Regression":              "Regression",
+    "Intake Queue":            "Intake Queue",
+    "Reimbursement Accuracy":  "Reimbursement Accuracy",
+    "Enterprise Solutions":    "Enterprise Solutions",
+    "Site Reliability":        "Site Reliability",
+    "Shared Services":         "Shared Services",
+    "Source Product Documentation": "Product Documentation",
+    "Retired_Captains":        "Retired_Captains",
+    "Retired_Chocoholics":     "Retired_Chocoholics",
+}
+
 USER_MAP_FILE = "ado_jira_user_map.csv"
 
 
@@ -1867,6 +1889,29 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if area_path:
         fields["customfield_14406"] = {"value": area_path}
         log_to_excel(wi_id, None, "Area Path", "Success", area_path)
+
+    # Scrum Team — derived from the last segment of System.AreaPath
+    if area_path:
+        last_segment = area_path.split("\\")[-1].strip()
+        scrum_team_value = AREA_PATH_TO_SCRUM_TEAM.get(last_segment)
+        if scrum_team_value:
+            fields["customfield_10169"] = {"value": scrum_team_value}
+            log_to_excel(wi_id, None, "Scrum Team", "Success", f"{area_path} → {scrum_team_value}")
+        else:
+            log_to_excel(wi_id, None, "Scrum Team", "Skipped", f"No mapping for segment: '{last_segment}'")
+
+    # Created By display name → plain text field
+    created_by = f.get("System.CreatedBy")
+    if isinstance(created_by, dict):
+        created_by_display = created_by.get("displayName", "").strip()
+        if created_by_display:
+            fields["customfield_12073"] = created_by_display
+            log_to_excel(wi_id, None, "Created By Display Name", "Success", created_by_display)
+        else:
+            log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "No displayName in CreatedBy")
+    else:
+        log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "CreatedBy not a dict")
+
 
     # # Area Path (text)
     # area = f.get("System.AreaPath")
