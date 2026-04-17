@@ -2705,7 +2705,7 @@ def migrate_all():
         log(f"🎯 Running migration for specific work items: {SPECIFIC_ID}")
     else:
         START_INDEX = 0
-        MAX_TO_PROCESS = 1000
+        MAX_TO_PROCESS = 20000
         ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
 
     for batch in chunked(ids, WIQL_PAGE_SIZE):
@@ -2916,18 +2916,18 @@ def migrate_all():
             df_main = pd.DataFrame(rows_data, columns=all_cols)
             df_sys = pd.DataFrame(system_log) if system_log else pd.DataFrame(
                 columns=["Timestamp", "Event", "Status", "Message"])
-            with pd.ExcelWriter("migration_log.xlsx", engine="openpyxl") as writer:
+            with pd.ExcelWriter("migration_log_hotfix.xlsx", engine="openpyxl") as writer:
                 df_main.to_excel(writer, sheet_name="WorkItems", index=False)
                 df_sys.to_excel(writer, sheet_name="SystemLog", index=False)
                 ws = writer.sheets["WorkItems"]
                 for col_cells in ws.columns:
                     max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
                     ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
-            print(f"✅ Migration log saved: migration_log.xlsx")
+            print(f"✅ Migration log saved: migration_log_hotfix.xlsx")
         else:
             print("⚠️ No work item rows to save.")
     except Exception as e:
-        print(f"❌ Failed to save migration_log.xlsx: {e}")
+        print(f"❌ Failed to save migration_log_hotfix.xlsx: {e}")
         import traceback
         traceback.print_exc()
 

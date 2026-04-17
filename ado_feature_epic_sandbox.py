@@ -625,6 +625,28 @@ STATE_MAP = {
     "Delivered": "Done",
 }
 
+AREA_PATH_TO_SCRUM_TEAM = {
+    "Automation":              "Automation",
+    "Cardinals":               "Cardinals",
+    "Innovators":              "Innovators",
+    "Inpatient":               "Inpatient",
+    "Maestros":                "Maestros",
+    "Outpatient":              "Outpatient",
+    "Pathfinders":             "Pathfinders",
+    "Payment Integrity":       "Payment Integrity",
+    "Phoenix":                 "Phoenix",
+    "Professional":            "Professional",
+    "Regression":              "Regression",
+    "Intake Queue":            "Intake Queue",
+    "Reimbursement Accuracy":  "Reimbursement Accuracy",
+    "Enterprise Solutions":    "Enterprise Solutions",
+    "Site Reliability":        "Site Reliability",
+    "Shared Services":         "Shared Services",
+    "Source Product Documentation": "Product Documentation",
+    "Retired_Captains":        "Retired_Captains",
+    "Retired_Chocoholics":     "Retired_Chocoholics",
+}
+
 # ============================================================
 # CSV-BASED USER MAP LOADING
 # ============================================================
@@ -2036,6 +2058,30 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         fields["customfield_14406"] = {"value": area_path}
         log_to_excel(wi_id, None, "Area Path", "Success", area_path)
 
+    # Scrum Team — derived from the last segment of System.AreaPath
+    if area_path:
+        last_segment = area_path.split("\\")[-1].strip()
+        scrum_team_value = AREA_PATH_TO_SCRUM_TEAM.get(last_segment)
+        if scrum_team_value:
+            fields["customfield_10169"] = {"value": scrum_team_value}
+            log_to_excel(wi_id, None, "Scrum Team", "Success", f"{area_path} → {scrum_team_value}")
+        else:
+            log_to_excel(wi_id, None, "Scrum Team", "Skipped", f"No mapping for segment: '{last_segment}'")
+
+    # Created By display name → plain text field
+    created_by = f.get("System.CreatedBy")
+    if isinstance(created_by, dict):
+        created_by_display = created_by.get("displayName", "").strip()
+        if created_by_display:
+            fields["customfield_12073"] = created_by_display
+            log_to_excel(wi_id, None, "Created By Display Name", "Success", created_by_display)
+        else:
+            log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "No displayName in CreatedBy")
+    else:
+        log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "CreatedBy not a dict")
+
+
+
     # area = f.get("System.AreaPath")
     # if area:
     #     try:
@@ -3041,14 +3087,14 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["884637"]  # Set to None for batch mode
+    SPECIFIC_ID = None  # Set to None for batch mode
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
         log(f"🎯 Running migration for a single work item: {SPECIFIC_ID}")
     else:
         START_INDEX = 0
-        MAX_TO_PROCESS = 1000
+        MAX_TO_PROCESS = 20000
         ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
         log(f"📌 Processing {len(ids)} work items (from index {START_INDEX}) in this run.")
 
@@ -3258,7 +3304,7 @@ def migrate_all():
             df_sys = pd.DataFrame(system_log) if system_log else pd.DataFrame(
                 columns=["Timestamp", "Event", "Status", "Message"])
 
-            with pd.ExcelWriter("migration_log.xlsx", engine="openpyxl") as writer:
+            with pd.ExcelWriter("migration_log_epic.xlsx", engine="openpyxl") as writer:
                 df_main.to_excel(writer, sheet_name="WorkItems", index=False)
                 df_sys.to_excel(writer, sheet_name="SystemLog", index=False)
                 # Auto-size columns
@@ -3267,11 +3313,11 @@ def migrate_all():
                     max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
                     ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
 
-            print("✅ Migration log saved to migration_log.xlsx (one row per work item)")
+            print("✅ Migration log saved to migration_log_epic.xlsx (one row per work item)")
         else:
             print("⚠️ No work item rows to save.")
     except Exception as e:
-        print(f"❌ Failed to save migration_log.xlsx: {e}")
+        print(f"❌ Failed to save migration_log_epic.xlsx: {e}")
         import traceback
         traceback.print_exc()
 

@@ -94,6 +94,27 @@ STATE_MAP = {
     "Removed": "Cancelled"
 }
 
+AREA_PATH_TO_SCRUM_TEAM = {
+    "Automation":              "Automation",
+    "Cardinals":               "Cardinals",
+    "Innovators":              "Innovators",
+    "Inpatient":               "Inpatient",
+    "Maestros":                "Maestros",
+    "Outpatient":              "Outpatient",
+    "Pathfinders":             "Pathfinders",
+    "Payment Integrity":       "Payment Integrity",
+    "Phoenix":                 "Phoenix",
+    "Professional":            "Professional",
+    "Regression":              "Regression",
+    "Intake Queue":            "Intake Queue",
+    "Reimbursement Accuracy":  "Reimbursement Accuracy",
+    "Enterprise Solutions":    "Enterprise Solutions",
+    "Site Reliability":        "Site Reliability",
+    "Shared Services":         "Shared Services",
+    "Source Product Documentation": "Product Documentation",
+    "Retired_Captains":        "Retired_Captains",
+    "Retired_Chocoholics":     "Retired_Chocoholics",
+}
 # CODE 1 STATE_MAP (more comprehensive mapping used for Bug migration):
 # STATE_MAP = {
 #     "New": "New",
@@ -1917,6 +1938,30 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
     if area_path:
         fields["customfield_14406"] = {"value": area_path}
         log_to_excel(wi_id, None, "Area Path", "Success", area_path)
+
+    # Scrum Team — derived from the last segment of System.AreaPath
+    if area_path:
+        last_segment = area_path.split("\\")[-1].strip()
+        scrum_team_value = AREA_PATH_TO_SCRUM_TEAM.get(last_segment)
+        if scrum_team_value:
+            fields["customfield_10169"] = {"value": scrum_team_value}
+            log_to_excel(wi_id, None, "Scrum Team", "Success", f"{area_path} → {scrum_team_value}")
+        else:
+            log_to_excel(wi_id, None, "Scrum Team", "Skipped", f"No mapping for segment: '{last_segment}'")
+
+    # Created By display name → plain text field
+    created_by = f.get("System.CreatedBy")
+    if isinstance(created_by, dict):
+        created_by_display = created_by.get("displayName", "").strip()
+        if created_by_display:
+            fields["customfield_12073"] = created_by_display
+            log_to_excel(wi_id, None, "Created By Display Name", "Success", created_by_display)
+        else:
+            log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "No displayName in CreatedBy")
+    else:
+        log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "CreatedBy not a dict")
+
+
     
     # # Area Path
     # area = f.get("System.AreaPath")
@@ -2561,7 +2606,7 @@ def migrate_all():
         log(f"🎯 Running migration for specific work items: {SPECIFIC_ID}")
     else:
         START_INDEX = 0
-        MAX_TO_PROCESS = 10000
+        MAX_TO_PROCESS = 20000
         ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
 
     for batch in chunked(ids, WIQL_PAGE_SIZE):
@@ -2736,18 +2781,18 @@ def migrate_all():
             df_main = pd.DataFrame(rows_data, columns=all_cols)
             df_sys = pd.DataFrame(system_log) if system_log else pd.DataFrame(
                 columns=["Timestamp", "Event", "Status", "Message"])
-            with pd.ExcelWriter("migration_log.xlsx", engine="openpyxl") as writer:
+            with pd.ExcelWriter("migration_log_task.xlsx", engine="openpyxl") as writer:
                 df_main.to_excel(writer, sheet_name="WorkItems", index=False)
                 df_sys.to_excel(writer, sheet_name="SystemLog", index=False)
                 ws = writer.sheets["WorkItems"]
                 for col_cells in ws.columns:
                     max_len = max((len(str(c.value or "")) for c in col_cells), default=10)
                     ws.column_dimensions[col_cells[0].column_letter].width = min(max_len + 4, 60)
-            print(f"✅ Migration log saved: migration_log.xlsx")
+            print(f"✅ Migration log saved: migration_log_task.xlsx")
         else:
             print("⚠️ No work item rows to save.")
     except Exception as e:
-        print(f"❌ Failed to save migration_log.xlsx: {e}")
+        print(f"❌ Failed to save migration_log_task.xlsx: {e}")
         import traceback
         traceback.print_exc()
 

@@ -740,6 +740,28 @@ STATE_MAP = {
     "In Progress": "Build"
 }
 
+AREA_PATH_TO_SCRUM_TEAM = {
+    "Automation":              "Automation",
+    "Cardinals":               "Cardinals",
+    "Innovators":              "Innovators",
+    "Inpatient":               "Inpatient",
+    "Maestros":                "Maestros",
+    "Outpatient":              "Outpatient",
+    "Pathfinders":             "Pathfinders",
+    "Payment Integrity":       "Payment Integrity",
+    "Phoenix":                 "Phoenix",
+    "Professional":            "Professional",
+    "Regression":              "Regression",
+    "Intake Queue":            "Intake Queue",
+    "Reimbursement Accuracy":  "Reimbursement Accuracy",
+    "Enterprise Solutions":    "Enterprise Solutions",
+    "Site Reliability":        "Site Reliability",
+    "Shared Services":         "Shared Services",
+    "Source Product Documentation": "Product Documentation",
+    "Retired_Captains":        "Retired_Captains",
+    "Retired_Chocoholics":     "Retired_Chocoholics",
+}
+
 WIQL_PAGE_SIZE = 200
 SLEEP_BETWEEN_CALLS = 0.2
 MAPPING_FILE = "ado_jira_mapping.json"
@@ -1877,6 +1899,30 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         fields["customfield_14406"] = {"value": area_path}
         log_to_excel(wi_id, None, "Area Path", "Success", area_path)
 
+    # Scrum Team — derived from the last segment of System.AreaPath
+    if area_path:
+        last_segment = area_path.split("\\")[-1].strip()
+        scrum_team_value = AREA_PATH_TO_SCRUM_TEAM.get(last_segment)
+        if scrum_team_value:
+            fields["customfield_10169"] = {"value": scrum_team_value}
+            log_to_excel(wi_id, None, "Scrum Team", "Success", f"{area_path} → {scrum_team_value}")
+        else:
+            log_to_excel(wi_id, None, "Scrum Team", "Skipped", f"No mapping for segment: '{last_segment}'")
+
+    # Created By display name → plain text field
+    created_by = f.get("System.CreatedBy")
+    if isinstance(created_by, dict):
+        created_by_display = created_by.get("displayName", "").strip()
+        if created_by_display:
+            fields["customfield_12073"] = created_by_display
+            log_to_excel(wi_id, None, "Created By Display Name", "Success", created_by_display)
+        else:
+            log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "No displayName in CreatedBy")
+    else:
+        log_to_excel(wi_id, None, "Created By Display Name", "Skipped", "CreatedBy not a dict")
+
+
+
     # # Area Path
     # area = f.get("System.AreaPath")
     # if area:
@@ -2982,7 +3028,7 @@ def migrate_all():
         log(f"🎯 Running migration for a single work item: {SPECIFIC_ID}")
     else:
         START_INDEX = 0
-        MAX_TO_PROCESS = 1000
+        MAX_TO_PROCESS = 20000
         ids = ids[START_INDEX:START_INDEX + MAX_TO_PROCESS]
         log(f"📌 Processing {len(ids)} work items (from index {START_INDEX}) in this run.")
 
@@ -3182,8 +3228,8 @@ def migrate_all():
     # Save migration log
     if migration_log:
         df = pd.DataFrame(list(migration_log.values()))
-        df.to_excel("migration_log.xlsx", index=False)
-        print("✅ Migration log saved to migration_log.xlsx")
+        df.to_excel("migration_log_initiative.xlsx", index=False)
+        print("✅ Migration log saved to migration_log_initiative.xlsx")
 
 
 if __name__ == "__main__":
