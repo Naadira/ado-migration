@@ -1644,8 +1644,9 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                 text = text.replace("\xa0", " ")
                 if text.strip():
                     nodes.append({"type": "text", "text": text})
-            elif isinstance(child, NavigableString.__class__.__bases__[0]):
-                name = (child.name or "").lower() if hasattr(child, 'name') else ""
+
+            elif isinstance(child, Tag):  # ← THIS is the real fix
+                name = (child.name or "").lower()
 
                 if name in ("b", "strong"):
                     text = child.get_text()
@@ -1693,7 +1694,7 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                     nodes.extend(inline_nodes_from(child))
 
                 elif name == "img":
-                    pass
+                    pass  # images handled at block level in walk()
 
                 else:
                     nodes.extend(inline_nodes_from(child))
@@ -1824,6 +1825,26 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
                 doc_content.append({
                     "type": "paragraph",
                     "content": inline
+                })
+            return
+        
+        # ---- A tag — emit as a paragraph with a clickable link ----
+        if name == "a":
+            href = (node.get("href") or "").strip()
+            label = node.get_text(strip=True) or href
+            if href:
+                doc_content.append({
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": label,
+                        "marks": [{"type": "link", "attrs": {"href": href}}]
+                    }]
+                })
+            elif label:
+                doc_content.append({
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": label}]
                 })
             return
 
@@ -3235,7 +3256,7 @@ def migrate_all():
 
     log(f"📌 Found {len(ids)} work items.")
 
-    SPECIFIC_ID = ["477380"] #["477240", "477517"]
+    SPECIFIC_ID = None #["477240", "477517"]
 
     if SPECIFIC_ID:
         ids = SPECIFIC_ID
