@@ -98,6 +98,7 @@ AREA_PATH_TO_SCRUM_TEAM = {
     "Shared Services":         "Shared Services",
     "Source Product Documentation": "Product Documentation",
     "Retired_Captains":        "Retired_Captains",
+    "Retired_Chargers":        "Retired_Chargers",
     "Retired_Chocoholics":     "Retired_Chocoholics",
 }
 
@@ -677,14 +678,30 @@ def jira_create_issue(fields: Dict, wi_id=None) -> str:
         except Exception:
             error_body = {}
         field_errors = error_body.get("errors", {})
+        
+        retry_fields = dict(fields)  # start with a copy of original fields
+        
         bad_fields = {"assignee", "reporter"} & set(field_errors.keys())
         if bad_fields:
             for bad in bad_fields:
                 log(f"   ⚠️ Jira rejected '{bad}'. Retrying without it.")
                 log_to_excel(wi_id, None, f"Create Issue – {bad.title()}", "Warning",
                              f"Removed '{bad}' — not permitted in project.")
-            retry_fields = {k: v for k, v in fields.items() if k not in bad_fields}
+            retry_fields = {k: v for k, v in retry_fields.items() if k not in bad_fields}
             r = _attempt(retry_fields)
+
+        # Handle cascading select child errors — strip child, keep parent
+        if r.status_code != 201:
+            for field_key, error_msg in field_errors.items():
+                if "child option" in str(error_msg).lower() or "valid child" in str(error_msg).lower():
+                    if field_key in retry_fields and isinstance(retry_fields[field_key], dict):
+                        parent_val = retry_fields[field_key].get("value")
+                        child_val = retry_fields[field_key].get("child", {}).get("value", "")
+                        log(f"   ❌ Invalid cascading child '{child_val}' for '{field_key}'. Please add it to Jira options.")
+                        log_to_excel(wi_id, None, f"Cascading Field – {field_key}", "Error",
+                                     f"Child '{child_val}' NOT in Jira options — add it to customfield_14515 under parent '{parent_val}'")
+                        return ""
+                    
     if r.status_code == 201:
         key = r.json().get("key")
         log(f"✅ Created {key}")
@@ -694,7 +711,6 @@ def jira_create_issue(fields: Dict, wi_id=None) -> str:
         log(f"❌ Issue create failed: {r.status_code} {r.text}")
         log_to_excel(wi_id, None, "Create Issue", "Failed", f"HTTP {r.status_code}: {r.text[:100]}")
         return ""
-
 
 def jira_add_comment(issue_key: str, text: str, wi_id=None):
     if not text:
@@ -1402,7 +1418,7 @@ def clean_html_steps(html_text):
 
 def steps_formatter(xml_data):
     global steps_payload
-    print(xml_data)
+    # print(xml_data)
     if not xml_data or not xml_data.strip():
         return {}
     root = ET.fromstring(xml_data)
@@ -1504,12 +1520,28 @@ def download_and_upload_reprosteps_images(issue_key: str, repro_html: str, wi_id
                 log(f"   📥 Downloading external image: {src}")
                 r = requests.get(src, timeout=15, stream=True)
                 if r.status_code == 200:
-                    with open(local_path, "wb") as f:
-                        for chunk in r.iter_content(8192):
-                            if chunk:
+                    # Detect HTML login page response
+                    content_type = r.headers.get("Content-Type", "").lower()
+                    first_chunk = b""
+                    all_chunks = []
+                    for chunk in r.iter_content(8192):
+                        if chunk:
+                            if not first_chunk:
+                                first_chunk = chunk
+                            all_chunks.append(chunk)
+
+                    if "text/html" in content_type or first_chunk.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
+                        log(f"   ⚠️ External image returned HTML login page, storing as link: {src}")
+                        log_to_excel(wi_id, issue_key, "External Image", "Skipped-Link",
+                                     f"Auth required — stored as link")
+                        attachment_map[src] = None  # None = render as link in make_media_node
+                        local_file = None
+                    else:
+                        with open(local_path, "wb") as f:
+                            for chunk in all_chunks:
                                 f.write(chunk)
-                    local_file = local_path
-                    log(f"   ✅ Downloaded external image: {filename}")
+                        local_file = local_path
+                        log(f"   ✅ Downloaded external image: {filename}")
                 else:
                     log(f"   ⚠️ Failed to download external image ({r.status_code}): {src}")
                     local_file = None
@@ -1547,15 +1579,26 @@ def convert_ado_reprosteps_to_jira_adf(html_input: str, attachment_map: Dict[str
     doc_content: List = []
 
     def make_media_node(src: str):
-        """Create media node with proper URL formatting."""
+        """Create media node. If attachment_map[src] is None, render as clickable link."""
         if src in attachment_map:
+            att_id = attachment_map[src]
+            if att_id is None:
+                # Login-protected URL — show as clickable link
+                return {
+                    "type": "paragraph",
+                    "content": [{
+                        "type": "text",
+                        "text": "Attachment",
+                        "marks": [{"type": "link", "attrs": {"href": src}}]
+                    }]
+                }
             base = clean_base(JIRA_URL)
-            url = f"{base}/rest/api/3/attachment/content/{attachment_map[src]}"
+            url = f"{base}/rest/api/3/attachment/content/{att_id}"
             return {"type": "mediaSingle", "attrs": {"layout": "center"},
                     "content": [{"type": "media", "attrs": {"type": "external", "url": url}}]}
         return {"type": "mediaSingle", "attrs": {"layout": "center"},
                 "content": [{"type": "media", "attrs": {"type": "external", "url": src}}]}
-
+    
     def _is_code_block_div(element) -> bool:
         """Check if a div should be treated as a code block."""
         if element.name != "div":
@@ -3005,6 +3048,8 @@ def build_comment_body_with_images(parts: List[Dict], image_url_map: Dict[str, s
             jira_url = image_url_map.get(key)
             if jira_url:
                 body_parts.append(f"!{jira_url}!")
+            elif key and key.startswith("http"):
+                body_parts.append(f"[Attachment|{key}]")
             else:
                 body_parts.append(f"[Image failed to load]")
 
@@ -3081,11 +3126,53 @@ def process_comment_and_post(issue_key: str, comment: Dict, wi_id=None, comment_
             src_key = p["src"]
             if src_key in image_url_map:
                 continue
-            parsed_url = urlparse(src_key)
-            query = parse_qs(parsed_url.query or "")
-            filename = query.get("fileName", [f"image_{comment_index}.png"])[0]
-            log(f"   📥 Downloading image: {filename}")
-            local_file = download_images_to_ado_attachments(src_key)
+            
+            # External image (not an ADO attachment) — try download with HTML detection
+            if ATTACH_URL_SUBSTR not in src_key:
+                try:
+                    r = requests.get(src_key, timeout=15, stream=True)
+                    if r.status_code == 200:
+                        content_type = r.headers.get("Content-Type", "").lower()
+                        first_chunk = b""
+                        all_chunks = []
+                        for chunk in r.iter_content(8192):
+                            if chunk:
+                                if not first_chunk:
+                                    first_chunk = chunk
+                                all_chunks.append(chunk)
+
+                        if "text/html" in content_type or first_chunk.lstrip()[:15].lower().startswith((b"<!doctype", b"<html")):
+                            log(f"   ⚠️ Comment image returned HTML login page, storing as link: {src_key}")
+                            image_url_map[src_key] = None
+                            img_fail_count += 1
+                            continue
+                        else:
+                            ensure_dir(ATTACH_DIR)
+                            parsed_url = urlparse(src_key)
+                            filename = sanitize_filename(os.path.basename(parsed_url.path)) or f"image_{comment_index}.png"
+                            if not os.path.splitext(filename)[1]:
+                                filename += ".png"
+                            local_path = unique_path(ATTACH_DIR, filename)
+                            with open(local_path, "wb") as f:
+                                for chunk in all_chunks:
+                                    f.write(chunk)
+                            local_file = local_path
+                    else:
+                        log(f"   ⚠️ Failed to download comment image ({r.status_code}): {src_key}")
+                        image_url_map[src_key] = None
+                        img_fail_count += 1
+                        continue
+                except Exception as e:
+                    log(f"   ⚠️ Error downloading comment image {src_key}: {e}")
+                    image_url_map[src_key] = None
+                    img_fail_count += 1
+                    continue
+            else:
+                parsed_url = urlparse(src_key)
+                query = parse_qs(parsed_url.query or "")
+                filename = query.get("fileName", [f"image_{comment_index}.png"])[0]
+                log(f"   📥 Downloading image: {filename}")
+                local_file = download_images_to_ado_attachments(src_key)
 
         if src_key in image_url_map:
             continue
@@ -3271,8 +3358,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
-        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'Defect'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2024-01-01' "
+        "AND [System.CreatedDate] <= '2024-12-31' AND [System.WorkItemType] = 'Defect'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
@@ -3332,10 +3419,13 @@ def migrate_all():
                         time.sleep(2)
                     verified_map = {}
                     for src, att_id in attachment_map.items():
+                        if att_id is None:
+                            verified_map[src] = None
+                            continue
                         base = clean_base(JIRA_URL)
                         verify_url = f"{base}/rest/api/3/attachment/{att_id}"
                         verify_response = api_request("get", verify_url, wi_id=wi_id, issue_key=issue_key,
-                                                       step=f"Verify Attachment {att_id}", auth=jira_auth())
+                                                    step=f"Verify Attachment {att_id}", auth=jira_auth())
                         if verify_response.status_code == 200:
                             verified_map[src] = att_id
                     jira_repro_adf = convert_ado_reprosteps_to_jira_adf(repro_steps_html, verified_map, issue_key)

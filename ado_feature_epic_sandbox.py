@@ -644,6 +644,7 @@ AREA_PATH_TO_SCRUM_TEAM = {
     "Shared Services":         "Shared Services",
     "Source Product Documentation": "Product Documentation",
     "Retired_Captains":        "Retired_Captains",
+    "Retired_Chargers":        "Retired_Chargers",
     "Retired_Chocoholics":     "Retired_Chocoholics",
 }
 
@@ -861,7 +862,7 @@ def convert_ado_datetime(ado_datetime_str):
         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ")
         dt = dt.replace(tzinfo=timezone.utc)
         result = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print(result, "with milliseconds")
+        # print(result, "with milliseconds")
         return result
     except ValueError:
         pass
@@ -870,7 +871,7 @@ def convert_ado_datetime(ado_datetime_str):
         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
         dt = dt.replace(tzinfo=timezone.utc)
         result = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print(result, "time")
+        # print(result, "time")
         return result
     except ValueError:
         pass
@@ -878,7 +879,7 @@ def convert_ado_datetime(ado_datetime_str):
     try:
         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y %H:%M")
         result = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print("date_time")
+        # print("date_time")
         return result
     except ValueError:
         pass
@@ -886,7 +887,7 @@ def convert_ado_datetime(ado_datetime_str):
     try:
         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y")
         formatted = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print(formatted, "date_month_year")
+        # print(formatted, "date_month_year")
         return formatted
     except ValueError:
         return None
@@ -908,7 +909,7 @@ def ado_get_workitems_by_ids(ids: List[int]) -> List[Dict]:
     url = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}/_apis/wit/workitems?api-version=7.0&$expand=all&ids={','.join(map(str, ids))}"
     r = api_request("get", url, step="Fetch WorkItems", auth=ado_auth())
     r.raise_for_status()
-    print(r.json().get("value", []), "Issue Detail from AzureDevops")
+    # print(r.json().get("value", []), "Issue Detail from AzureDevops")
     return r.json().get("value", [])
 
 def ado_get_comments(wi_id: int) -> List[Dict]:
@@ -1086,7 +1087,7 @@ def jira_create_issue(fields: Dict, wi_id=None) -> str:
     base = clean_base(JIRA_URL)
     url = f"{base}/rest/api/3/issue"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    print(fields, "lop")
+    # print(fields, "lop")
     # CODE 1 DIFFERENCE: Code 1 adds a retry/fallback mechanism inside jira_create_issue.
     # If the initial POST returns HTTP 400 and the error body indicates that "assignee"
     # or "reporter" fields were rejected (field-level validation errors), Code 1 strips
@@ -2039,7 +2040,7 @@ def build_jira_fields_from_ado(wi: Dict) -> Dict:
         log_to_excel(wi_id, None, "PI", "Skipped", "No PI values in ADO")
 
     wid = f.get("System.Id")
-    print(wid)
+    # print(wid)
     if wid:
         try:
             ado_base = f"https://dev.azure.com/{ADO_ORG}/{ADO_PROJECT}"
@@ -3077,8 +3078,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
-        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'Feature'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2023-08-01' "
+        "AND [System.CreatedDate] <= '2023-12-31' AND [System.WorkItemType] = 'Feature'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
@@ -3105,7 +3106,7 @@ def migrate_all():
         log(f"➡️  Processing batch of {len(workitems)}")
 
         for wi in workitems:
-            print(wi, "This is the work Item")
+            # print(wi, "This is the work Item")
             wi_id = int(wi.get("id"))
             wi_id_str = str(wi_id)
             log(f"--- ADO #{wi_id_str} ---")
@@ -3142,11 +3143,11 @@ def migrate_all():
             # Code 1 also includes a fix_relative_urls_in_repro_steps() call and an attachment
             # verification loop with time.sleep(2) that Code 2 entirely lacks.
             try:
-                print("one")
+                # print("one")
                 raw_desc = wi.get("fields", {}).get("System.Description", "")
-                print(raw_desc, "test")
+                # print(raw_desc, "test")
                 if raw_desc:
-                    print("two")
+                    # print("two")
                     log_to_excel(wi_id, issue_key, "Description", "Processing", "Processing description with table support")
                     desc_adf = improved_process_description_to_adf(issue_key, raw_desc, wi_id=wi_id)
                     base = clean_base(JIRA_URL)

@@ -125,6 +125,7 @@ AREA_PATH_TO_SCRUM_TEAM = {
     "Shared Services":         "Shared Services",
     "Source Product Documentation": "Product Documentation",
     "Retired_Captains":        "Retired_Captains",
+    "Retired_Chargers":        "Retired_Chargers",
     "Retired_Chocoholics":     "Retired_Chocoholics",
 }
 
@@ -2824,8 +2825,8 @@ def migrate_all():
     # Code 2 queries for WorkItemType = 'User Story' over the same date range.
     # Both files are single-project migration scripts targeting different work item types.
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
-        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'User Story'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2023-08-20' "
+        "AND [System.CreatedDate] <= '2023-12-31' AND [System.WorkItemType] = 'User Story'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:

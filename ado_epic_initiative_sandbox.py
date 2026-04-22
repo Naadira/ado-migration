@@ -759,6 +759,7 @@ AREA_PATH_TO_SCRUM_TEAM = {
     "Shared Services":         "Shared Services",
     "Source Product Documentation": "Product Documentation",
     "Retired_Captains":        "Retired_Captains",
+    "Retired_Chargers":        "Retired_Chargers",
     "Retired_Chocoholics":     "Retired_Chocoholics",
 }
 
@@ -879,7 +880,7 @@ def convert_ado_datetime(ado_datetime_str):
         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%S.%fZ")
         dt = dt.replace(tzinfo=timezone.utc)
         result = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print(result, "with milliseconds")
+        # print(result, "with milliseconds")
         return result
     except ValueError:
         pass
@@ -887,21 +888,21 @@ def convert_ado_datetime(ado_datetime_str):
         dt = datetime.strptime(ado_datetime_str, "%Y-%m-%dT%H:%M:%SZ")
         dt = dt.replace(tzinfo=timezone.utc)
         result = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print(result, "time")
+        # print(result, "time")
         return result
     except ValueError:
         pass
     try:
         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y %H:%M")
         result = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print("date_time")
+        # print("date_time")
         return result
     except ValueError:
         pass
     try:
         dt = datetime.strptime(ado_datetime_str, "%d/%m/%Y")
         formatted = dt.strftime("%Y-%m-%dT%H:%M:%S.000+0000")
-        print(formatted, "date_month_year")
+        # print(formatted, "date_month_year")
         return formatted
     except ValueError:
         return None
@@ -933,7 +934,7 @@ def ado_get_workitems_by_ids(ids: List[int]) -> List[Dict]:
         label=f"ADO get workitems {ids[:3]}..."
     )
     r.raise_for_status()
-    print(r.json().get("value", []), "Issue Detail from AzureDevops")
+    # print(r.json().get("value", []), "Issue Detail from AzureDevops")
     return r.json().get("value", [])
 
 def ado_get_comments(wi_id: int) -> List[Dict]:
@@ -1121,7 +1122,7 @@ def jira_create_issue(fields: Dict) -> str:
     base = clean_base(JIRA_URL)
     url = f"{base}/rest/api/3/issue"
     headers = {"Content-Type": "application/json", "Accept": "application/json"}
-    print(fields, "lop")
+    # print(fields, "lop")
     try:
         r = api_call_with_retry(
             requests.post, url,
@@ -3011,8 +3012,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
-        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'Epic'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2023-08-01' "
+        "AND [System.CreatedDate] <= '2023-12-31' AND [System.WorkItemType] = 'Epic'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:

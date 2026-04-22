@@ -113,6 +113,7 @@ AREA_PATH_TO_SCRUM_TEAM = {
     "Shared Services":         "Shared Services",
     "Source Product Documentation": "Product Documentation",
     "Retired_Captains":        "Retired_Captains",
+    "Retired_Chargers":        "Retired_Chargers",
     "Retired_Chocoholics":     "Retired_Chocoholics",
 }
 # CODE 1 STATE_MAP (more comprehensive mapping used for Bug migration):
@@ -2586,8 +2587,8 @@ def migrate_all():
         mapping = {}
 
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
-        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'Task'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2023-08-20' "
+        "AND [System.CreatedDate] <= '2023-12-31' AND [System.WorkItemType] = 'Task'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:

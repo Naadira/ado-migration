@@ -91,6 +91,7 @@ AREA_PATH_TO_SCRUM_TEAM = {
     "Shared Services":         "Shared Services",
     "Source Product Documentation": "Product Documentation",
     "Retired_Captains":        "Retired_Captains",
+    "Retired_Chargers":        "Retired_Chargers",
     "Retired_Chocoholics":     "Retired_Chocoholics",
 }
 
@@ -666,9 +667,9 @@ def jira_create_issue(fields: Dict, wi_id=None) -> str:
                            auth=jira_auth(), headers=headers, json={"fields": payload_fields})
 
     # DEBUG PRINT
-    print("\n===== FINAL CREATE ISSUE PAYLOAD =====")
-    print(json.dumps({"fields": fields}, indent=2))
-    print("=======================================\n")
+    # print("\n===== FINAL CREATE ISSUE PAYLOAD =====")
+    # print(json.dumps({"fields": fields}, indent=2))
+    # print("=======================================\n")
 
     r = _attempt(fields)
     if r.status_code == 400:

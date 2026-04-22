@@ -119,6 +119,7 @@ AREA_PATH_TO_SCRUM_TEAM = {
     "Shared Services":         "Shared Services",
     "Source Product Documentation": "Product Documentation",
     "Retired_Captains":        "Retired_Captains",
+    "Retired_Chargers":        "Retired_Chargers",
     "Retired_Chocoholics":     "Retired_Chocoholics",
 }
 
@@ -2609,8 +2610,8 @@ def migrate_all():
     # CODE 1 NOTE: Code 1 WIQL queries for WorkItemType = 'Bug' in the same date range.
     # Code 2 queries for WorkItemType = 'Request' below.
     wiql = (
-        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2026-04-01' "
-        "AND [System.CreatedDate] <= '2026-04-15' AND [System.WorkItemType] = 'Request'"
+        "SELECT [System.Id] FROM WorkItems WHERE [System.CreatedDate] >= '2024-01-01' "
+        "AND [System.CreatedDate] <= '2024-06-30' AND [System.WorkItemType] = 'Request'"
     )
     ids = ado_wiql_all_ids(wiql)
     if not ids:
